@@ -38,6 +38,266 @@ def localized_title(subject):
     )
 
 
+def _normalize_infobox_value(value):
+    """Return normalized values and any labels carried by value objects."""
+    if isinstance(value, str) and value.strip():
+        return [value.strip()], []
+    if not isinstance(value, list):
+        return [], []
+
+    values = []
+    keyed_values = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        item_value = item.get("v")
+        if not isinstance(item_value, str) or not item_value.strip():
+            continue
+        item_value = item_value.strip()
+        values.append(item_value)
+        item_key = item.get("k")
+        if isinstance(item_key, str) and item_key.strip():
+            keyed_values.append((item_key.strip(), item_value))
+    return values, keyed_values
+
+
+def normalize_infobox(subject):
+    """Normalize optional Bangumi infobox entries into string lists."""
+    if not isinstance(subject, dict) or not isinstance(subject.get("infobox"), list):
+        return {}
+
+    info = {}
+    for entry in subject["infobox"]:
+        if not isinstance(entry, dict):
+            continue
+        key = entry.get("key")
+        if not isinstance(key, str) or not key.strip():
+            continue
+
+        values, keyed_values = _normalize_infobox_value(entry.get("value"))
+        if values:
+            info.setdefault(key.strip(), []).extend(values)
+        for item_key, item_value in keyed_values:
+            info.setdefault(item_key, []).append(item_value)
+    return info
+
+
+def first_infobox_value(info, *keys):
+    """Return the first non-empty normalized value for the requested aliases."""
+    if not isinstance(info, dict):
+        return None
+    for key in keys:
+        values = info.get(key)
+        if not isinstance(values, list):
+            continue
+        for value in values:
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return None
+
+
+def positive_int(value):
+    """Return a strictly positive integer, or None for invalid values."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value > 0 else None
+    if isinstance(value, str):
+        try:
+            parsed = int(value.strip())
+        except ValueError:
+            return None
+        return parsed if parsed > 0 else None
+    return None
+
+
+def _raise_detail_schema_error(details):
+    """Raise a provider error for an invalid Bangumi detail response."""
+    message = f"Invalid Bangumi response: {details}"
+    error = ValueError(message)
+    raise services.ProviderAPIError(
+        Sources.BANGUMI.value,
+        error,
+        message,
+    ) from error
+
+
+def _validate_detail_subject(response, media_id, subject_type):
+    """Validate the required identity and title of a detail response."""
+    if not isinstance(response, dict):
+        _raise_detail_schema_error("expected an object")
+
+    response_id = response.get("id")
+    if (
+        isinstance(response_id, bool)
+        or not isinstance(response_id, int)
+        or response_id <= 0
+        or response_id != media_id
+    ):
+        _raise_detail_schema_error("id must be a matching positive integer")
+
+    response_type = response.get("type")
+    if (
+        isinstance(response_type, bool)
+        or not isinstance(response_type, int)
+        or response_type != subject_type
+    ):
+        _raise_detail_schema_error("type must match the request")
+
+    for field in ("name_cn", "name"):
+        value = response.get(field)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return _raise_detail_schema_error("title must be a non-empty string")
+
+
+def _detail_image(response):
+    """Return the preferred usable Bangumi detail image."""
+    images = response.get("images")
+    if isinstance(images, dict):
+        for key in ("large", "common"):
+            image = images.get(key)
+            if isinstance(image, str) and image.strip():
+                return image.strip()
+    return settings.IMG_NONE
+
+
+def _detail_rating(response):
+    """Return correctly typed Bangumi score fields."""
+    rating = response.get("rating")
+    if not isinstance(rating, dict):
+        return None, None
+
+    score = rating.get("score")
+    if isinstance(score, bool) or not isinstance(score, (int, float)):
+        score = None
+
+    score_count = rating.get("total")
+    if (
+        isinstance(score_count, bool)
+        or not isinstance(score_count, int)
+        or score_count < 0
+    ):
+        score_count = None
+    return score, score_count
+
+
+def _detail_tags(response):
+    """Return correctly typed Bangumi tag names."""
+    tags = response.get("tags")
+    if not isinstance(tags, list):
+        return None
+    names = []
+    for tag in tags:
+        if not isinstance(tag, dict):
+            continue
+        name = tag.get("name")
+        if isinstance(name, str) and name.strip():
+            names.append(name.strip())
+    return names or None
+
+
+def _optional_string(response, key):
+    """Return a trimmed optional string."""
+    value = response.get(key)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
+def _game_details(response, info):
+    """Map approved Bangumi game details."""
+    platforms = info.get("平台")
+    if not isinstance(platforms, list) or not platforms:
+        platforms = None
+    return {
+        "release_date": _optional_string(response, "date")
+        or first_infobox_value(info, "发售日", "发售日期", "发行日期"),
+        "platforms": platforms,
+        "format": first_infobox_value(info, "游戏类型", "类型"),
+        "developer": first_infobox_value(info, "开发商", "开发"),
+        "publisher": first_infobox_value(info, "发行商", "发行"),
+    }
+
+
+def _book_details(response, info):
+    """Map approved Bangumi book details."""
+    pages = positive_int(first_infobox_value(info, "页数"))
+    details = {
+        "number_of_pages": pages,
+        "author": first_infobox_value(info, "作者"),
+        "publisher": first_infobox_value(info, "出版社"),
+        "isbn": first_infobox_value(info, "ISBN", "ISBN-13"),
+        "publish_date": first_infobox_value(
+            info,
+            "发售日",
+            "出版日",
+            "出版日期",
+            "出版年",
+        )
+        or _optional_string(response, "date"),
+    }
+    return pages, details
+
+
+def subject(media_id, media_type):
+    """Return normalized Bangumi metadata for one subject."""
+    if media_type not in SUBJECT_TYPES:
+        msg = f"Unsupported Bangumi media type: {media_type}"
+        raise ValueError(msg)
+
+    requested_id = positive_int(media_id)
+    if requested_id is None:
+        msg = f"Invalid Bangumi subject ID: {media_id}"
+        raise ValueError(msg)
+    canonical_id = str(requested_id)
+
+    cache_key = f"bangumi_{media_type}_{canonical_id}"
+    data = cache.get(cache_key)
+    if data is not None:
+        return data
+
+    try:
+        response = services.api_request(
+            Sources.BANGUMI.value,
+            "GET",
+            f"{BASE_URL}/subjects/{canonical_id}",
+            headers={"User-Agent": USER_AGENT},
+        )
+    except requests.RequestException as error:
+        raise services.ProviderAPIError(Sources.BANGUMI.value, error) from error
+
+    subject_type = SUBJECT_TYPES[media_type]
+    title = _validate_detail_subject(response, requested_id, subject_type)
+    info = normalize_infobox(response)
+    score, score_count = _detail_rating(response)
+    max_progress = None
+    if media_type == MediaTypes.GAME.value:
+        details = _game_details(response, info)
+    elif media_type == MediaTypes.BOOK.value:
+        max_progress, details = _book_details(response, info)
+    else:
+        details = {}
+
+    data = {
+        "media_id": canonical_id,
+        "source": Sources.BANGUMI.value,
+        "source_url": f"https://bgm.tv/subject/{canonical_id}",
+        "media_type": media_type,
+        "title": title,
+        "max_progress": max_progress,
+        "image": _detail_image(response),
+        "synopsis": _optional_string(response, "summary")
+        or "No synopsis available.",
+        "genres": _detail_tags(response),
+        "score": score,
+        "score_count": score_count,
+        "details": details,
+    }
+    cache.set(cache_key, data)
+    return data
+
+
 def _validate_pagination(response, expected_limit, expected_offset):
     """Validate the pagination envelope returned by Bangumi."""
     if not isinstance(response, dict) or not isinstance(response.get("data"), list):
