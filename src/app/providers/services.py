@@ -11,6 +11,7 @@ from requests_ratelimiter import LimiterAdapter, LimiterSession
 
 from app.models import MediaTypes, Sources
 from app.providers import (
+    bangumi,
     bgg,
     comicvine,
     hardcover,
@@ -36,6 +37,7 @@ def get_redis_client():
 
 redis_db = get_redis_client()
 bucket_key = f"{settings.REDIS_PREFIX}_api" if settings.REDIS_PREFIX else "api"
+bangumi_bucket_key = f"{bucket_key}_bangumi"
 
 session = LimiterSession(
     per_second=5,
@@ -50,6 +52,12 @@ session.mount(
     "https://api.myanimelist.net/v2",
     LimiterAdapter(per_minute=30),
 )
+bangumi_adapter = LimiterAdapter(
+    per_second=2,
+    bucket_class=RedisBucket,
+    bucket_kwargs={"redis": redis_db, "bucket_key": bangumi_bucket_key},
+)
+session.mount("https://api.bgm.tv/v0/", bangumi_adapter)
 session.mount(
     "https://graphql.anilist.co",
     LimiterAdapter(per_minute=85),
@@ -141,6 +149,9 @@ def api_request(
     data=None,
     headers=None,
     response_format="json",
+    *,
+    query_params=None,
+    retry_rate_limit=True,
 ):
     """Make a request to the API and return the response.
 
@@ -152,6 +163,8 @@ def api_request(
         data: Raw data for POST
         headers: Request headers
         response_format: "json" (default) or "xml" for XML parsing
+        query_params: URL query parameters for POST requests
+        retry_rate_limit: Whether to sleep and retry HTTP 429 responses
 
     Returns:
         Parsed JSON dict or ElementTree for XML
@@ -169,6 +182,7 @@ def api_request(
         elif method == "POST":
             request_kwargs["data"] = data
             request_kwargs["json"] = params
+            request_kwargs["params"] = query_params
             request_func = session.post
 
         response = request_func(**request_kwargs)
@@ -184,6 +198,8 @@ def api_request(
 
         # handle rate limiting
         if status_code == requests.codes.too_many_requests:
+            if not retry_rate_limit:
+                raise
             seconds_to_wait = int(error_resp.headers.get("Retry-After", 5))
             logger.warning("Rate limited, waiting %s seconds", seconds_to_wait)
             time.sleep(seconds_to_wait + 3)
@@ -196,6 +212,7 @@ def api_request(
                 data=data,
                 headers=headers,
                 response_format=response_format,
+                query_params=query_params,
             )
 
         raise error from None
@@ -217,6 +234,9 @@ def get_media_metadata(
         if media_type == "tv_with_seasons":
             media_type = MediaTypes.TV.value
         return manual.metadata(media_id, media_type)
+
+    if source == Sources.BANGUMI.value:
+        return bangumi.subject(media_id, media_type)
 
     metadata_retrievers = {
         MediaTypes.ANIME.value: lambda: mal.anime(media_id),
@@ -250,6 +270,9 @@ def get_media_metadata(
 
 def search(media_type, query, page, source=None):
     """Search for media based on the query and return the results."""
+    if source == Sources.BANGUMI.value:
+        return bangumi.search(media_type, query, page)
+
     search_handlers = {
         MediaTypes.MANGA.value: lambda: (
             mangaupdates.search(query, page)

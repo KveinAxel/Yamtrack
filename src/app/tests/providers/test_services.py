@@ -1,9 +1,11 @@
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import requests
 from django.test import TestCase
+from pyrate_limiter import RedisBucket
 
+from app import config
 from app.models import MediaTypes, Sources
 from app.providers import (
     igdb,
@@ -64,6 +66,26 @@ class ServicesTests(TestCase):
         self.assertEqual(kwargs["data"], {"form_data": "value"})
         self.assertIn("timeout", kwargs)
 
+    @patch("app.providers.services.session.post")
+    def test_api_request_post_separates_json_and_query_params(self, mock_post):
+        """POST requests keep JSON bodies separate from URL query parameters."""
+        response = MagicMock()
+        response.json.return_value = {"data": "test"}
+        mock_post.return_value = response
+
+        result = services.api_request(
+            "TEST",
+            "POST",
+            "https://example.com/api",
+            params={"keyword": "query"},
+            query_params={"limit": 20, "offset": 20},
+        )
+
+        self.assertEqual(result, {"data": "test"})
+        _, kwargs = mock_post.call_args
+        self.assertEqual(kwargs["json"], {"keyword": "query"})
+        self.assertEqual(kwargs["params"], {"limit": 20, "offset": 20})
+
     @patch("app.providers.services.api_request")
     def test_request_error_handling_rate_limit(self, mock_api_request):
         """Test the request_error_handling function with rate limiting."""
@@ -89,6 +111,161 @@ class ServicesTests(TestCase):
         mock_api_request.assert_called_once()
 
         self.assertEqual(result, {"data": "retry_success"})
+
+    @patch("app.providers.services.time.sleep")
+    @patch("app.providers.services.session.get")
+    def test_api_request_can_disable_rate_limit_retry(self, mock_get, mock_sleep):
+        """A caller can surface the original 429 without sleeping or retrying."""
+        response = MagicMock()
+        error = requests.exceptions.HTTPError("429 Too Many Requests")
+        error.response = response
+        response.raise_for_status.side_effect = error
+        response.status_code = requests.codes.too_many_requests
+        response.headers = {"Retry-After": "5"}
+        mock_get.return_value = response
+
+        with self.assertRaises(requests.exceptions.HTTPError) as context:
+            services.api_request(
+                "TEST",
+                "GET",
+                "https://example.com/api",
+                retry_rate_limit=False,
+            )
+
+        self.assertIs(context.exception, error)
+        mock_get.assert_called_once()
+        mock_sleep.assert_not_called()
+
+    @patch("app.providers.services.time.sleep")
+    @patch("app.providers.services.session.get")
+    def test_api_request_retries_rate_limit_by_default(self, mock_get, mock_sleep):
+        """Omitting retry_rate_limit preserves one recursive retry."""
+        rate_limited = MagicMock()
+        error = requests.exceptions.HTTPError("429 Too Many Requests")
+        error.response = rate_limited
+        rate_limited.raise_for_status.side_effect = error
+        rate_limited.status_code = requests.codes.too_many_requests
+        rate_limited.headers = {"Retry-After": "5"}
+
+        success = MagicMock()
+        success.json.return_value = {"data": "retry_success"}
+        mock_get.side_effect = [rate_limited, success]
+
+        result = services.api_request("TEST", "GET", "https://example.com/api")
+
+        self.assertEqual(result, {"data": "retry_success"})
+        self.assertEqual(mock_get.call_count, 2)
+        mock_sleep.assert_called_once_with(8)
+
+    @patch("app.providers.services.time.sleep")
+    @patch("app.providers.services.session.post")
+    def test_api_request_retry_preserves_post_query_params(self, mock_post, mock_sleep):
+        """A recursive 429 retry retains both POST body and query parameters."""
+        rate_limited = MagicMock()
+        error = requests.exceptions.HTTPError("429 Too Many Requests")
+        error.response = rate_limited
+        rate_limited.raise_for_status.side_effect = error
+        rate_limited.status_code = requests.codes.too_many_requests
+        rate_limited.headers = {"Retry-After": "0"}
+        success = MagicMock()
+        success.json.return_value = {"data": "retry_success"}
+        mock_post.side_effect = [rate_limited, success]
+
+        result = services.api_request(
+            "TEST",
+            "POST",
+            "https://example.com/api",
+            params={"keyword": "query"},
+            query_params={"limit": 20, "offset": 20},
+        )
+
+        self.assertEqual(result, {"data": "retry_success"})
+        self.assertEqual(mock_post.call_count, 2)
+        for request_call in mock_post.call_args_list:
+            self.assertEqual(request_call.kwargs["json"], {"keyword": "query"})
+            self.assertEqual(
+                request_call.kwargs["params"],
+                {"limit": 20, "offset": 20},
+            )
+        mock_sleep.assert_called_once_with(3)
+
+    def test_bangumi_is_first_and_default_source_for_supported_media(self):
+        """Chinese-first media types expose Bangumi before legacy providers."""
+        expected = {
+            MediaTypes.ANIME.value: [Sources.BANGUMI, Sources.MAL],
+            MediaTypes.GAME.value: [Sources.BANGUMI, Sources.IGDB],
+            MediaTypes.BOOK.value: [
+                Sources.BANGUMI,
+                Sources.HARDCOVER,
+                Sources.OPENLIBRARY,
+            ],
+        }
+
+        for media_type, sources in expected.items():
+            with self.subTest(media_type=media_type):
+                self.assertEqual(
+                    config.MEDIA_TYPE_CONFIG[media_type]["sources"],
+                    sources,
+                )
+                self.assertEqual(
+                    config.MEDIA_TYPE_CONFIG[media_type]["default_source"],
+                    Sources.BANGUMI,
+                )
+
+    @patch("app.providers.services.bangumi.search")
+    def test_default_sources_dispatch_supported_media_to_bangumi(self, mock_search):
+        """Configured defaults drive anime, game, and book searches to Bangumi."""
+        mock_search.return_value = {"results": []}
+
+        for media_type in (
+            MediaTypes.ANIME.value,
+            MediaTypes.GAME.value,
+            MediaTypes.BOOK.value,
+        ):
+            default_source = config.MEDIA_TYPE_CONFIG[media_type]["default_source"]
+            result = services.search(
+                media_type,
+                "query",
+                1,
+                source=default_source.value,
+            )
+            self.assertEqual(result, {"results": []})
+
+        self.assertEqual(
+            mock_search.call_args_list,
+            [
+                call(MediaTypes.ANIME.value, "query", 1),
+                call(MediaTypes.GAME.value, "query", 1),
+                call(MediaTypes.BOOK.value, "query", 1),
+            ],
+        )
+
+    def test_bangumi_limiter_uses_exact_shared_redis_prefix(self):
+        """Bangumi traffic uses a shared Redis limiter only under the v0 path."""
+        self.assertIs(
+            services.session.adapters["https://api.bgm.tv/v0/"],
+            services.bangumi_adapter,
+        )
+        self.assertIs(
+            services.session.get_adapter("https://api.bgm.tv/v0/subjects/1"),
+            services.bangumi_adapter,
+        )
+        self.assertIs(
+            services.session.get_adapter("https://api.bgm.tv/v0evil"),
+            services.session.adapters["https://"],
+        )
+
+        factory = services.bangumi_adapter.limiter.bucket_factory
+        self.assertIs(factory.bucket_class, RedisBucket)
+        self.assertIs(factory.bucket_init_kwargs["redis"], services.redis_db)
+        self.assertEqual(
+            factory.bucket_init_kwargs["bucket_key"],
+            services.bangumi_bucket_key,
+        )
+        self.assertNotEqual(services.bangumi_bucket_key, services.bucket_key)
+        self.assertEqual(len(factory.rates), 1)
+        self.assertEqual(factory.rates[0].limit, 2)
+        self.assertEqual(factory.rates[0].interval, 1000)
 
     @patch("app.providers.igdb.cache.delete")
     def test_handle_error_igdb_unauthorized(
@@ -301,6 +478,48 @@ class ServicesTests(TestCase):
 
         mock_game.assert_called_once_with("1")
 
+    @patch("app.providers.bangumi.subject")
+    def test_get_media_metadata_bangumi_game(self, mock_subject):
+        """Bangumi game metadata dispatches to the subject endpoint."""
+        mock_subject.return_value = {"title": "Test Game"}
+
+        result = services.get_media_metadata(
+            MediaTypes.GAME.value,
+            313495,
+            Sources.BANGUMI.value,
+        )
+
+        self.assertEqual(result, {"title": "Test Game"})
+        mock_subject.assert_called_once_with(313495, MediaTypes.GAME.value)
+
+    @patch("app.providers.bangumi.subject")
+    def test_get_media_metadata_bangumi_book(self, mock_subject):
+        """Bangumi book metadata dispatches to the subject endpoint."""
+        mock_subject.return_value = {"title": "Test Book"}
+
+        result = services.get_media_metadata(
+            MediaTypes.BOOK.value,
+            9585,
+            Sources.BANGUMI.value,
+        )
+
+        self.assertEqual(result, {"title": "Test Book"})
+        mock_subject.assert_called_once_with(9585, MediaTypes.BOOK.value)
+
+    @patch("app.providers.bangumi.subject")
+    def test_get_media_metadata_bangumi_anime(self, mock_subject):
+        """Bangumi anime metadata dispatches to the subject endpoint."""
+        mock_subject.return_value = {"title": "Test Anime"}
+
+        result = services.get_media_metadata(
+            MediaTypes.ANIME.value,
+            400602,
+            Sources.BANGUMI.value,
+        )
+
+        self.assertEqual(result, {"title": "Test Anime"})
+        mock_subject.assert_called_once_with(400602, MediaTypes.ANIME.value)
+
     @patch("app.providers.comicvine.comic")
     def test_get_media_metadata_comic(self, mock_comic):
         """Test the get_media_metadata function for comics."""
@@ -431,6 +650,25 @@ class ServicesTests(TestCase):
         self.assertEqual(result, [{"title": "Test Anime"}])
 
         mock_search.assert_called_once_with(MediaTypes.ANIME.value, "test", 1)
+
+    @patch("app.providers.bangumi.search")
+    def test_search_bangumi_anime(self, mock_search):
+        """An explicit Bangumi source dispatches to Bangumi search."""
+        mock_search.return_value = [{"title": "葬送的芙莉莲"}]
+
+        result = services.search(
+            MediaTypes.ANIME.value,
+            "葬送的芙莉莲",
+            1,
+            source=Sources.BANGUMI.value,
+        )
+
+        self.assertEqual(result, [{"title": "葬送的芙莉莲"}])
+        mock_search.assert_called_once_with(
+            MediaTypes.ANIME.value,
+            "葬送的芙莉莲",
+            1,
+        )
 
     @patch("app.providers.mangaupdates.search")
     def test_search_manga_mangaupdates(self, mock_search):

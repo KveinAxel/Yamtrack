@@ -1,5 +1,7 @@
 from datetime import UTC, datetime
+from io import BytesIO
 from pathlib import Path
+from unittest.mock import call, patch
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
@@ -13,9 +15,11 @@ from app.models import (
     Movie,
     Season,
 )
+from app.providers import services
 from integrations.imports import (
     yamtrack,
 )
+from integrations.imports.helpers import MediaImportError
 
 mock_path = Path(__file__).resolve().parent.parent / "mock_data"
 app_mock_path = (
@@ -190,10 +194,7 @@ class ImportYamtrackPartials(TestCase):
         """Test end dates during import."""
         book = Book.objects.filter(user=self.user).first()
         self.assertEqual(book.history.count(), 1)
-        bookqs = Book.objects.filter(
-            user=self.user,
-            item__title="Warlock",
-        ).order_by("-end_date")
+        bookqs = Book.objects.filter(user=self.user).order_by("-end_date")
         books = list(bookqs)
 
         self.assertEqual(len(books), 3)
@@ -209,3 +210,188 @@ class ImportYamtrackPartials(TestCase):
             books[2].end_date,
             datetime(2024, 3, 9, 0, 0, 0, tzinfo=UTC),
         )
+
+
+class YamtrackMissingMetadataTests(TestCase):
+    """Test deterministic provider selection for title-only import rows."""
+
+    def setUp(self):
+        """Create an importer without reading a CSV file."""
+        self.user = get_user_model().objects.create_user(username="fallback-test")
+        self.importer = yamtrack.YamtrackImporter(None, self.user, "new")
+
+    @patch("integrations.imports.yamtrack.services.search")
+    def test_blank_source_falls_back_in_configured_order(self, mock_search):
+        """Empty results advance providers sequentially and stop on a hit."""
+        mock_search.side_effect = [
+            {"results": []},
+            {
+                "results": [
+                    {
+                        "title": "Warlock",
+                        "source": "hardcover",
+                        "media_id": "book-1",
+                        "image": "https://example.invalid/warlock.jpg",
+                    },
+                ],
+            },
+        ]
+        row = {
+            "media_id": "",
+            "source": "",
+            "media_type": "book",
+            "title": "0312980388",
+            "image": "",
+        }
+
+        self.importer._handle_missing_metadata(row, "book", None, None)
+
+        self.assertEqual(
+            mock_search.call_args_list,
+            [
+                call("book", "0312980388", 1, "bangumi"),
+                call("book", "0312980388", 1, "hardcover"),
+            ],
+        )
+        self.assertEqual(row["source"], "hardcover")
+        self.assertEqual(row["media_id"], "book-1")
+        self.assertEqual(row["title"], "Warlock")
+
+    @patch("integrations.imports.yamtrack.services.search")
+    def test_blank_source_stops_after_first_provider_hit(self, mock_search):
+        """A Bangumi hit prevents calls to later configured providers."""
+        mock_search.return_value = {
+            "results": [
+                {
+                    "title": "葬送的芙莉莲",
+                    "source": "bangumi",
+                    "media_id": 400602,
+                    "image": "https://example.invalid/frieren.jpg",
+                },
+            ],
+        }
+        row = {
+            "media_id": "",
+            "source": "",
+            "media_type": "anime",
+            "title": "葬送的芙莉莲",
+            "image": "",
+        }
+
+        self.importer._handle_missing_metadata(row, "anime", None, None)
+
+        mock_search.assert_called_once_with("anime", "葬送的芙莉莲", 1, "bangumi")
+        self.assertEqual(row["source"], "bangumi")
+
+    @patch("integrations.imports.yamtrack.services.search")
+    def test_explicit_source_empty_result_does_not_fallback(self, mock_search):
+        """An explicit source is authoritative even when it has no results."""
+        mock_search.return_value = {"results": []}
+        row = {
+            "media_id": "",
+            "source": "hardcover",
+            "media_type": "book",
+            "title": "Missing Book",
+            "image": "",
+        }
+
+        with self.assertRaises(MediaImportError) as context:
+            self.importer._handle_missing_metadata(row, "book", None, None)
+
+        mock_search.assert_called_once_with("book", "Missing Book", 1, "hardcover")
+        self.assertIn("book", str(context.exception))
+        self.assertIn("Missing Book", str(context.exception))
+        self.assertIn("hardcover", str(context.exception))
+
+    @patch("integrations.imports.yamtrack.services.search")
+    def test_all_configured_sources_empty_raises_clear_error(self, mock_search):
+        """Exhausting configured sources raises MediaImportError, never IndexError."""
+        mock_search.return_value = {"results": []}
+        row = {
+            "media_id": "",
+            "source": "",
+            "media_type": "book",
+            "title": "Missing Book",
+            "image": "",
+        }
+
+        with self.assertRaises(MediaImportError) as context:
+            self.importer._handle_missing_metadata(row, "book", None, None)
+
+        self.assertEqual(
+            mock_search.call_args_list,
+            [
+                call("book", "Missing Book", 1, "bangumi"),
+                call("book", "Missing Book", 1, "hardcover"),
+                call("book", "Missing Book", 1, "openlibrary"),
+            ],
+        )
+        self.assertIn("book", str(context.exception))
+        self.assertIn("Missing Book", str(context.exception))
+        self.assertIn("bangumi, hardcover, openlibrary", str(context.exception))
+
+    @patch("integrations.imports.yamtrack.services.search")
+    def test_provider_error_is_not_treated_as_empty_result(self, mock_search):
+        """Provider failures propagate instead of triggering another provider."""
+        error = services.ProviderAPIError(
+            "bangumi",
+            ConnectionError("Bangumi unavailable"),
+        )
+        mock_search.side_effect = error
+        row = {
+            "media_id": "",
+            "source": "",
+            "media_type": "book",
+            "title": "Book",
+            "image": "",
+        }
+
+        with self.assertRaises(services.ProviderAPIError) as context:
+            self.importer._handle_missing_metadata(row, "book", None, None)
+
+        self.assertIs(context.exception, error)
+        mock_search.assert_called_once_with("book", "Book", 1, "bangumi")
+
+    @patch("integrations.imports.yamtrack.services.search")
+    def test_blank_season_source_uses_only_tmdb(self, mock_search):
+        """Season title resolution preserves its configured TMDB provider."""
+        mock_search.return_value = {
+            "results": [
+                {
+                    "title": "Friends",
+                    "source": "tmdb",
+                    "media_id": 1668,
+                    "image": "https://example.invalid/friends.jpg",
+                },
+            ],
+        }
+        row = {
+            "media_id": "",
+            "source": "",
+            "media_type": "season",
+            "title": "Friends",
+            "image": "",
+        }
+
+        self.importer._handle_missing_metadata(row, "season", 1, None)
+
+        mock_search.assert_called_once_with("season", "Friends", 1, "tmdb")
+        self.assertEqual(row["source"], "tmdb")
+        self.assertEqual(row["media_id"], 1668)
+
+    @patch("integrations.imports.yamtrack.services.search")
+    def test_import_data_preserves_clear_all_empty_error(self, mock_search):
+        """The public importer does not wrap an expected no-results error."""
+        mock_search.return_value = {"results": []}
+        csv_file = BytesIO(
+            b"media_id,source,media_type,title,image,season_number,episode_number,"
+            b"progress,status\n,,book,Missing Book,,,,0,Completed\n",
+        )
+        importer = yamtrack.YamtrackImporter(csv_file, self.user, "new")
+
+        with self.assertRaises(MediaImportError) as context:
+            importer.import_data()
+
+        self.assertIn("book", str(context.exception))
+        self.assertIn("Missing Book", str(context.exception))
+        self.assertIn("bangumi, hardcover, openlibrary", str(context.exception))

@@ -67,6 +67,8 @@ class YamtrackImporter:
         for row in reader:
             try:
                 self._process_row(row)
+            except MediaImportError:
+                raise
             except services.ProviderAPIError as error:
                 error_msg = (
                     f"Error processing entry with ID {row['media_id']} "
@@ -180,27 +182,43 @@ class YamtrackImporter:
             return
 
         if row.get("title", "") != "":
-            source = row.get("source", "")
-            if source == "":
-                source = config.get_default_source_name(media_type).value
-
-            metadata = services.search(
-                media_type,
-                row["title"],
-                1,
-                source,
+            explicit_source = row.get("source", "")
+            sources = (
+                [explicit_source]
+                if explicit_source
+                else [
+                    source.value
+                    for source in config.MEDIA_TYPE_CONFIG[media_type]["sources"]
+                ]
             )
 
-            first_result = metadata["results"][0]
-            row["title"] = first_result["title"]
-            row["source"] = first_result["source"]
-            row["media_id"] = first_result["media_id"]
-            row["media_type"] = media_type
-            row["image"] = first_result["image"]
+            for source in sources:
+                metadata = services.search(
+                    media_type,
+                    row["title"],
+                    1,
+                    source,
+                )
+                if not metadata["results"]:
+                    continue
 
-            logger.info("Added title from %s: %s", source, row["title"])
-            logger.info("Obtained media id: %s", row["media_id"])
-            return
+                first_result = metadata["results"][0]
+                row["title"] = first_result["title"]
+                row["source"] = first_result["source"]
+                row["media_id"] = first_result["media_id"]
+                row["media_type"] = media_type
+                row["image"] = first_result["image"]
+
+                logger.info("Added title from %s: %s", source, row["title"])
+                logger.info("Obtained media id: %s", row["media_id"])
+                return
+
+            source_names = ", ".join(sources)
+            msg = (
+                f"No metadata found for {media_type} '{row['title']}' "
+                f"using sources: {source_names}"
+            )
+            raise MediaImportError(msg)
 
         msg = f"Missing metadata for: {row}"
         raise MediaImportError(msg)

@@ -157,6 +157,7 @@ class BangumiDetailTests(TestCase):
             "GET",
             "https://api.bgm.tv/v0/subjects/313495",
             headers={"User-Agent": bangumi.USER_AGENT},
+            retry_rate_limit=False,
         )
 
     @patch("app.providers.bangumi.services.api_request")
@@ -225,6 +226,7 @@ class BangumiDetailTests(TestCase):
             "GET",
             "https://api.bgm.tv/v0/subjects/9585",
             headers={"User-Agent": bangumi.USER_AGENT},
+            retry_rate_limit=False,
         )
 
     @patch("app.providers.bangumi.services.api_request")
@@ -455,6 +457,7 @@ class BangumiEpisodeTests(TestCase):
                 "offset": 0,
             },
             headers={"User-Agent": bangumi.USER_AGENT},
+            retry_rate_limit=False,
         )
 
     @patch("app.providers.bangumi.EPISODE_PAGE_LIMIT", 2)
@@ -492,6 +495,7 @@ class BangumiEpisodeTests(TestCase):
                         "offset": expected_offset,
                     },
                     "headers": {"User-Agent": bangumi.USER_AGENT},
+                    "retry_rate_limit": False,
                 },
             )
 
@@ -743,6 +747,10 @@ class BangumiSearchTests(TestCase):
         """Clear cached search responses before each test."""
         cache.clear()
 
+    def test_search_uses_provider_page_limit(self):
+        """Bangumi search locks the production API page cap at 20."""
+        self.assertEqual(bangumi.SEARCH_PAGE_LIMIT, 20)
+
     def test_localized_title_prefers_trimmed_chinese_title(self):
         """Chinese titles are trimmed and preferred."""
         subject = {"name_cn": " 中文 ", "name": "原名"}
@@ -792,15 +800,15 @@ class BangumiSearchTests(TestCase):
                 "keyword": "葬送的芙莉莲",
                 "sort": "match",
                 "filter": {"type": [2]},
-                "limit": settings.PER_PAGE,
-                "offset": 0,
             },
+            query_params={"limit": 20, "offset": 0},
             headers={
                 "User-Agent": (
                     "KveinAxel-Yamtrack/0.1 "
                     "(https://github.com/KveinAxel/Yamtrack)"
                 ),
             },
+            retry_rate_limit=False,
         )
 
     @patch("app.providers.bangumi.services.api_request")
@@ -827,6 +835,12 @@ class BangumiSearchTests(TestCase):
                 _, kwargs = mock_api_request.call_args
                 self.assertEqual(kwargs["params"]["filter"], {"type": [subject_type]})
                 self.assertEqual(kwargs["params"]["sort"], "match")
+                self.assertNotIn("limit", kwargs["params"])
+                self.assertNotIn("offset", kwargs["params"])
+                self.assertEqual(
+                    kwargs["query_params"],
+                    {"limit": 20, "offset": 0},
+                )
                 self.assertEqual(kwargs["headers"], {"User-Agent": bangumi.USER_AGENT})
 
     @patch("app.providers.bangumi.services.api_request")
@@ -843,7 +857,7 @@ class BangumiSearchTests(TestCase):
         """Search returns Yamtrack fields and derives the requested offset."""
         fixture = load_fixture("bangumi_search_game.json")
         fixture["total"] = 49
-        fixture["offset"] = settings.PER_PAGE
+        fixture["offset"] = 20
         mock_api_request.return_value = fixture
 
         response = bangumi.search(MediaTypes.GAME.value, "示例冒险", 2)
@@ -866,8 +880,42 @@ class BangumiSearchTests(TestCase):
             },
         )
         _, kwargs = mock_api_request.call_args
-        self.assertEqual(kwargs["params"]["limit"], settings.PER_PAGE)
-        self.assertEqual(kwargs["params"]["offset"], settings.PER_PAGE)
+        self.assertEqual(
+            kwargs["params"],
+            {
+                "keyword": "示例冒险",
+                "sort": "match",
+                "filter": {"type": [4]},
+            },
+        )
+        self.assertEqual(kwargs["query_params"], {"limit": 20, "offset": 20})
+
+    @patch("app.providers.bangumi.services.api_request")
+    def test_search_accepts_only_real_provider_pagination(self, mock_api_request):
+        """The real limit 20 envelope succeeds while mismatches are rejected."""
+        valid = load_fixture("bangumi_search_anime.json")
+        mock_api_request.return_value = valid
+
+        response = bangumi.search(MediaTypes.ANIME.value, "valid", 1)
+
+        self.assertEqual(response["page"], 1)
+        self.assertEqual(response["total_pages"], 1)
+
+        for index, invalid_limit in enumerate((10, 24)):
+            with self.subTest(limit=invalid_limit):
+                cache.clear()
+                mock_api_request.return_value = {**valid, "limit": invalid_limit}
+                with self.assertRaises(ProviderAPIError):
+                    bangumi.search(
+                        MediaTypes.ANIME.value,
+                        f"invalid-limit-{index}",
+                        1,
+                    )
+
+        cache.clear()
+        mock_api_request.return_value = {**valid, "offset": 20}
+        with self.assertRaises(ProviderAPIError):
+            bangumi.search(MediaTypes.ANIME.value, "invalid-offset", 1)
 
     @patch("app.providers.bangumi.services.api_request")
     def test_invalid_media_type_fails_before_http_request(self, mock_api_request):
@@ -932,10 +980,10 @@ class BangumiSearchTests(TestCase):
             {**valid, "total": -1},
             {**valid, "total": True},
             {**valid, "limit": -1},
-            {**valid, "limit": "24"},
+            {**valid, "limit": "20"},
             {**valid, "offset": -1},
             {**valid, "offset": "0"},
-            {**valid, "limit": settings.PER_PAGE + 1},
+            {**valid, "limit": 21},
             {**valid, "offset": 1},
         ]
 

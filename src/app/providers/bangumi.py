@@ -11,6 +11,7 @@ from app.providers import services
 BASE_URL = "https://api.bgm.tv/v0"
 USER_AGENT = "KveinAxel-Yamtrack/0.1 (https://github.com/KveinAxel/Yamtrack)"
 EPISODE_PAGE_LIMIT = 200
+SEARCH_PAGE_LIMIT = 20
 SUBJECT_TYPES = {
     MediaTypes.BOOK.value: 1,
     MediaTypes.ANIME.value: 2,
@@ -315,6 +316,7 @@ def ordinary_episode_count(subject_id):
                     "offset": offset,
                 },
                 headers={"User-Agent": USER_AGENT},
+                retry_rate_limit=False,
             )
         except requests.RequestException as error:
             raise services.ProviderAPIError(Sources.BANGUMI.value, error) from error
@@ -378,6 +380,7 @@ def subject(media_id, media_type):
             "GET",
             f"{BASE_URL}/subjects/{canonical_id}",
             headers={"User-Agent": USER_AGENT},
+            retry_rate_limit=False,
         )
     except requests.RequestException as error:
         raise services.ProviderAPIError(Sources.BANGUMI.value, error) from error
@@ -490,13 +493,11 @@ def search(media_type, query, page):
         return data
 
     subject_type = SUBJECT_TYPES[media_type]
-    offset = (page - 1) * settings.PER_PAGE
+    offset = (page - 1) * SEARCH_PAGE_LIMIT
     params = {
         "keyword": query,
         "sort": "match",
         "filter": {"type": [subject_type]},
-        "limit": settings.PER_PAGE,
-        "offset": offset,
     }
 
     try:
@@ -505,19 +506,21 @@ def search(media_type, query, page):
             "POST",
             f"{BASE_URL}/search/subjects",
             params=params,
+            query_params={"limit": SEARCH_PAGE_LIMIT, "offset": offset},
             headers={"User-Agent": USER_AGENT},
+            retry_rate_limit=False,
         )
     except requests.RequestException as error:
         raise services.ProviderAPIError(Sources.BANGUMI.value, error) from error
 
-    _validate_pagination(response, settings.PER_PAGE, offset)
+    _validate_pagination(response, SEARCH_PAGE_LIMIT, offset)
     results = [
         _format_subject(_validate_subject(subject, subject_type), media_type)
         for subject in response["data"]
     ]
     data = helpers.format_search_response(
         page,
-        settings.PER_PAGE,
+        SEARCH_PAGE_LIMIT,
         response["total"],
         results,
     )
