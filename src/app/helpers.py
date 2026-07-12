@@ -117,7 +117,7 @@ def format_search_response(page, per_page, total_results, results):
     return {
         "page": page,
         "total_results": total_results,
-        "total_pages": total_results // per_page + 1,
+        "total_pages": (total_results + per_page - 1) // per_page,
         "results": results,
     }
 

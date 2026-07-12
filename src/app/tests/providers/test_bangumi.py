@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 import requests
 from django.conf import settings
@@ -1015,20 +1015,30 @@ class BangumiSearchTests(TestCase):
     @patch("app.providers.bangumi.cache.set")
     @patch("app.providers.bangumi.cache.get")
     @patch("app.providers.bangumi.services.api_request")
-    def test_search_uses_exact_cache_key(
+    def test_search_cache_key_separates_schema_and_effective_page_size(
         self,
         mock_api_request,
         mock_cache_get,
         mock_cache_set,
     ):
-        """Cached results use the required deterministic cache key."""
+        """Cache identity changes with schema and effective page size."""
         cached_response = {"results": ["cached"]}
         mock_cache_get.return_value = cached_response
 
-        response = bangumi.search(MediaTypes.BOOK.value, "中文 查询", 3)
+        default_response = bangumi.search(MediaTypes.BOOK.value, "中文 查询", 3)
+        with override_settings(PER_PAGE=7):
+            smaller_response = bangumi.search(MediaTypes.BOOK.value, "中文 查询", 3)
 
-        self.assertIs(response, cached_response)
-        mock_cache_get.assert_called_once_with("search_bangumi_book_中文 查询_3")
+        self.assertIs(default_response, cached_response)
+        self.assertIs(smaller_response, cached_response)
+        self.assertEqual(bangumi.SEARCH_CACHE_VERSION, "v2")
+        self.assertEqual(
+            mock_cache_get.call_args_list,
+            [
+                call("search_bangumi_v2_book_中文 查询_3_20"),
+                call("search_bangumi_v2_book_中文 查询_3_7"),
+            ],
+        )
         mock_cache_set.assert_not_called()
         mock_api_request.assert_not_called()
 
@@ -1041,7 +1051,7 @@ class BangumiSearchTests(TestCase):
             response = bangumi.search(MediaTypes.BOOK.value, "示例图书", 1)
 
         mock_cache_set.assert_called_once_with(
-            "search_bangumi_book_示例图书_1",
+            "search_bangumi_v2_book_示例图书_1_20",
             response,
         )
 

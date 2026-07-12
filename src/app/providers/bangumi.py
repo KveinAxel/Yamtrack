@@ -12,6 +12,7 @@ BASE_URL = "https://api.bgm.tv/v0"
 USER_AGENT = "KveinAxel-Yamtrack/0.1 (https://github.com/KveinAxel/Yamtrack)"
 EPISODE_PAGE_LIMIT = 200
 SEARCH_PAGE_LIMIT = 20  # Bangumi caps search responses at 20 items.
+SEARCH_CACHE_VERSION = "v2"
 SUBJECT_TYPES = {
     MediaTypes.BOOK.value: 1,
     MediaTypes.ANIME.value: 2,
@@ -490,13 +491,15 @@ def search(media_type, query, page):
         msg = f"Unsupported Bangumi media type: {media_type}"
         raise ValueError(msg)
 
-    cache_key = f"search_bangumi_{media_type}_{query}_{page}"
+    per_page = min(settings.PER_PAGE, SEARCH_PAGE_LIMIT)
+    cache_key = (
+        f"search_bangumi_{SEARCH_CACHE_VERSION}_{media_type}_{query}_{page}_{per_page}"
+    )
     data = cache.get(cache_key)
     if data is not None:
         return data
 
     subject_type = SUBJECT_TYPES[media_type]
-    per_page = min(settings.PER_PAGE, SEARCH_PAGE_LIMIT)
     offset = (page - 1) * per_page
     params = {
         "keyword": query,

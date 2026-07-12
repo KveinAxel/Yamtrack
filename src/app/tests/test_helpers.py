@@ -8,6 +8,7 @@ from app.helpers import (
     build_absolute_app_url,
     enrich_items_with_user_data,
     form_error_messages,
+    format_search_response,
     get_configured_app_url,
     minutes_to_hhmm,
     redirect_back,
@@ -29,6 +30,28 @@ class HelpersTest(TestCase):
 
         # Test zero
         self.assertEqual(minutes_to_hhmm(0), "0min")
+
+    def test_format_search_response_uses_ceiling_page_count(self):
+        """Search page counts handle empty, partial, full, and exact pages."""
+        per_page = 20
+        cases = (
+            (0, 0),
+            (1, 1),
+            (per_page, 1),
+            (per_page + 1, 2),
+            (per_page * 2, 2),
+        )
+
+        for total_results, expected_pages in cases:
+            with self.subTest(total_results=total_results):
+                response = format_search_response(
+                    page=1,
+                    per_page=per_page,
+                    total_results=total_results,
+                    results=[],
+                )
+
+                self.assertEqual(response["total_pages"], expected_pages)
 
     @override_settings(URLS=["https://yamtrack.example.com:8924"])
     def test_get_configured_app_url_from_urls(self):
