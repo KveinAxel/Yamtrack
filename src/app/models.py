@@ -46,6 +46,7 @@ class Sources(models.TextChoices):
     HARDCOVER = "hardcover", "Hardcover"
     COMICVINE = "comicvine", "Comic Vine"
     BGG = "bgg", "BoardGameGeek"
+    BANGUMI = "bangumi", "Bangumi"
     MANUAL = "manual", "Manual"
 
 

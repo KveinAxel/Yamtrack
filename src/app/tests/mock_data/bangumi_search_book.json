@@ -1,0 +1,17 @@
+{
+  "total": 1,
+  "limit": 24,
+  "offset": 0,
+  "data": [
+    {
+      "id": 900002,
+      "type": 1,
+      "name": "Sample Book",
+      "name_cn": "示例图书",
+      "summary": "用于测试搜索结果格式的虚构图书。",
+      "images": {
+        "large": "https://example.invalid/bangumi/book-900002.jpg"
+      }
+    }
+  ]
+}
