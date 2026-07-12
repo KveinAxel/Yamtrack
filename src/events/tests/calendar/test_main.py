@@ -3,14 +3,65 @@ from unittest.mock import patch
 from django.test import TestCase
 from django.utils import timezone
 
-from app.models import Item, Sources
-from events.calendar.main import cleanup_invalid_events, fetch_releases, save_events
+from app.models import Item, MediaTypes, Sources
+from events.calendar.main import (
+    cleanup_invalid_events,
+    fetch_releases,
+    process_items,
+    save_events,
+)
 from events.models import Event
 from events.tests.calendar.utils import CalendarFixturesMixin
 
 
 class CalendarMainTests(CalendarFixturesMixin, TestCase):
     """Test the calendar orchestration entrypoint."""
+
+    @patch("events.calendar.main.process_other")
+    @patch("events.calendar.main.process_anime_bulk")
+    def test_process_items_partitions_anime_by_source(
+        self,
+        mock_process_anime_bulk,
+        mock_process_other,
+    ):
+        """Only MAL anime should use AniList when provider IDs collide."""
+        bangumi_item = Item.objects.create(
+            media_id=self.anime_item.media_id,
+            source=Sources.BANGUMI.value,
+            media_type=MediaTypes.ANIME.value,
+            title="Bangumi collision",
+            image="https://example.invalid/bangumi.jpg",
+        )
+        mock_process_anime_bulk.side_effect = lambda items, events: events.extend(
+            Event(
+                item=item,
+                content_number=1,
+                datetime=timezone.now(),
+            )
+            for item in items
+        )
+        mock_process_other.side_effect = lambda item, events: events.append(
+            Event(item=item, content_number=None, datetime=timezone.now()),
+        )
+
+        events = process_items([self.anime_item, bangumi_item])
+
+        anime_items = mock_process_anime_bulk.call_args.args[0]
+        self.assertEqual(anime_items, [self.anime_item])
+        mock_process_other.assert_called_once()
+        self.assertEqual(mock_process_other.call_args.args[0], bangumi_item)
+        self.assertTrue(
+            any(
+                event.item == self.anime_item and event.content_number == 1
+                for event in events
+            ),
+        )
+        self.assertFalse(
+            any(
+                event.item == bangumi_item and event.content_number == 1
+                for event in events
+            ),
+        )
 
     @patch("events.calendar.selectors.tmdb.movie_changes")
     @patch("events.calendar.selectors.tmdb.tv_changes")

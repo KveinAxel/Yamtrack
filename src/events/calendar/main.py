@@ -34,7 +34,10 @@ def process_items(items_to_process):
     anime_to_process = []
 
     for item in items_to_process:
-        if item.media_type == MediaTypes.ANIME.value:
+        if (
+            item.media_type == MediaTypes.ANIME.value
+            and item.source == Sources.MAL.value
+        ):
             anime_to_process.append(item)
         elif item.media_type == MediaTypes.TV.value:
             process_tv(item, events_bulk)

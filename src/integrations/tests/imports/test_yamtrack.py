@@ -128,11 +128,90 @@ class ImportYamtrackPartials(TestCase):
     """Test importing yamtrack media with no ID."""
 
     def setUp(self):
-        """Create user for the tests."""
+        """Create a user and import with deterministic provider responses."""
         self.credentials = {"username": "test", "password": "12345"}
         self.user = get_user_model().objects.create_user(**self.credentials)
+        search_patcher = patch("integrations.imports.yamtrack.services.search")
+        metadata_patcher = patch(
+            "integrations.imports.yamtrack.services.get_media_metadata",
+        )
+        self.mock_search = search_patcher.start()
+        self.mock_get_media_metadata = metadata_patcher.start()
+        self.addCleanup(search_patcher.stop)
+        self.addCleanup(metadata_patcher.stop)
+
+        search_results = {
+            ("book", "Warlock", "bangumi"): (
+                "Warlock: Rebirth",
+                "bangumi",
+                "640193",
+            ),
+            ("book", "0312980388", "hardcover"): (
+                "Warlock",
+                "hardcover",
+                "429650",
+            ),
+            ("movie", "Perfect Blue", "tmdb"): (
+                "Perfect Blue",
+                "tmdb",
+                "10494",
+            ),
+            ("season", "Friends", "tmdb"): ("Friends", "tmdb", "1668"),
+            ("episode", "Friends", "tmdb"): ("Friends", "tmdb", "1668"),
+        }
+
+        def search_side_effect(media_type, query, _page, source):
+            result = search_results.get((media_type, query, source))
+            if result is None:
+                return {"results": []}
+            title, result_source, media_id = result
+            return {
+                "results": [
+                    {
+                        "title": title,
+                        "source": result_source,
+                        "media_id": media_id,
+                        "image": f"https://example.invalid/{media_id}.jpg",
+                    },
+                ],
+            }
+
+        metadata_results = {
+            ("book", "429650", "hardcover"): "Warlock",
+            ("tv", "1668", "tmdb"): "Friends",
+            ("season", "1668", "tmdb"): "Friends",
+        }
+
+        def metadata_side_effect(media_type, media_id, source, *_):
+            return {
+                "title": metadata_results[(media_type, media_id, source)],
+                "image": f"https://example.invalid/{media_type}-{media_id}.jpg",
+            }
+
+        self.mock_search.side_effect = search_side_effect
+        self.mock_get_media_metadata.side_effect = metadata_side_effect
         with Path(mock_path / "import_yamtrack_partials.csv").open("rb") as file:
             self.import_results = yamtrack.importer(file, self.user, "new")
+
+    def test_provider_resolution_order(self):
+        """CSV partials use configured fallbacks without live provider calls."""
+        self.assertEqual(
+            self.mock_search.call_args_list,
+            [
+                call("book", "Warlock", 1, "bangumi"),
+                call("book", "0312980388", 1, "bangumi"),
+                call("book", "0312980388", 1, "hardcover"),
+                call("movie", "Perfect Blue", 1, "tmdb"),
+            ],
+        )
+        self.assertEqual(
+            self.mock_get_media_metadata.call_args_list,
+            [
+                call("book", "429650", "hardcover", [None], None),
+                call("tv", "1668", "tmdb", [None], None),
+                call("season", "1668", "tmdb", [1], None),
+            ],
+        )
 
     def test_import_counts(self):
         """Test basic counts of imported media."""
