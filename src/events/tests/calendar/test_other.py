@@ -4,15 +4,78 @@ from zoneinfo import ZoneInfo
 
 from django.test import TestCase
 
-from app.models import Item, MediaTypes, Sources
+from app.models import Anime, BasicMedia, Item, MediaTypes, Sources, Status
 from app.providers import services
 from events.calendar.helpers import date_parser
 from events.calendar.other import process_other
+from events.models import Event
 from events.tests.calendar.utils import CalendarFixturesMixin
 
 
 class CalendarOtherTests(CalendarFixturesMixin, TestCase):
     """Test generic calendar processing."""
+
+    @patch("events.calendar.other.services.get_media_metadata")
+    def test_process_other_bangumi_anime_uses_progress_sentinel(
+        self,
+        mock_get_media_metadata,
+    ):
+        """Bangumi anime progress should create one aggregate event."""
+        bangumi_item = Item.objects.create(
+            media_id="400602",
+            source=Sources.BANGUMI.value,
+            media_type=MediaTypes.ANIME.value,
+            title="葬送的芙莉莲",
+            image="https://example.invalid/frieren.jpg",
+        )
+        mock_get_media_metadata.return_value = {
+            "max_progress": 28,
+            "details": {"start_date": "2023-09-29", "episodes": 28},
+        }
+
+        events_bulk = []
+        process_other(bangumi_item, events_bulk)
+
+        self.assertEqual(len(events_bulk), 1)
+        self.assertEqual(events_bulk[0].item, bangumi_item)
+        self.assertEqual(events_bulk[0].content_number, 28)
+        self.assertEqual(
+            events_bulk[0].datetime,
+            datetime.datetime.min.replace(tzinfo=ZoneInfo("UTC")),
+        )
+
+    @patch("events.calendar.other.services.get_media_metadata")
+    def test_bangumi_anime_progress_event_sets_denominator(
+        self,
+        mock_get_media_metadata,
+    ):
+        """The persisted aggregate event should drive the anime denominator."""
+        bangumi_item = Item.objects.create(
+            media_id="400602",
+            source=Sources.BANGUMI.value,
+            media_type=MediaTypes.ANIME.value,
+            title="葬送的芙莉莲",
+            image="https://example.invalid/frieren.jpg",
+        )
+        tracked_anime = Anime.objects.create(
+            item=bangumi_item,
+            user=self.user,
+            status=Status.PLANNING.value,
+        )
+        mock_get_media_metadata.return_value = {
+            "max_progress": 28,
+            "details": {"start_date": "2023-09-29", "episodes": 28},
+        }
+
+        events_bulk = []
+        process_other(bangumi_item, events_bulk)
+        Event.objects.bulk_create(events_bulk)
+        BasicMedia.objects.annotate_max_progress(
+            [tracked_anime],
+            MediaTypes.ANIME.value,
+        )
+
+        self.assertEqual(tracked_anime.max_progress, 28)
 
     @patch("events.calendar.other.services.get_media_metadata")
     def test_process_other_movie(self, mock_get_media_metadata):

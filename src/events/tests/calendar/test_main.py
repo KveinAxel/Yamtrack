@@ -17,12 +17,12 @@ from events.tests.calendar.utils import CalendarFixturesMixin
 class CalendarMainTests(CalendarFixturesMixin, TestCase):
     """Test the calendar orchestration entrypoint."""
 
-    @patch("events.calendar.main.process_other")
+    @patch("events.calendar.other.services.get_media_metadata")
     @patch("events.calendar.main.process_anime_bulk")
     def test_process_items_partitions_anime_by_source(
         self,
         mock_process_anime_bulk,
-        mock_process_other,
+        mock_get_media_metadata,
     ):
         """Only MAL anime should use AniList when provider IDs collide."""
         bangumi_item = Item.objects.create(
@@ -40,16 +40,24 @@ class CalendarMainTests(CalendarFixturesMixin, TestCase):
             )
             for item in items
         )
-        mock_process_other.side_effect = lambda item, events: events.append(
-            Event(item=item, content_number=None, datetime=timezone.now()),
-        )
+        expected_progress = 28
+        mock_get_media_metadata.return_value = {
+            "max_progress": expected_progress,
+            "details": {
+                "start_date": "2023-09-29",
+                "episodes": expected_progress,
+            },
+        }
 
         events = process_items([self.anime_item, bangumi_item])
 
         anime_items = mock_process_anime_bulk.call_args.args[0]
         self.assertEqual(anime_items, [self.anime_item])
-        mock_process_other.assert_called_once()
-        self.assertEqual(mock_process_other.call_args.args[0], bangumi_item)
+        mock_get_media_metadata.assert_called_once_with(
+            MediaTypes.ANIME.value,
+            bangumi_item.media_id,
+            Sources.BANGUMI.value,
+        )
         self.assertTrue(
             any(
                 event.item == self.anime_item and event.content_number == 1
@@ -59,6 +67,13 @@ class CalendarMainTests(CalendarFixturesMixin, TestCase):
         self.assertFalse(
             any(
                 event.item == bangumi_item and event.content_number == 1
+                for event in events
+            ),
+        )
+        self.assertTrue(
+            any(
+                event.item == bangumi_item
+                and event.content_number == expected_progress
                 for event in events
             ),
         )
