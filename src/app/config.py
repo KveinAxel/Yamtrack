@@ -119,8 +119,8 @@ MEDIA_TYPE_CONFIG = {
         "date_key": "release_date",
     },
     MediaTypes.ANIME.value: {
-        "sources": [Sources.MAL],
-        "default_source": Sources.MAL,
+        "sources": [Sources.BANGUMI, Sources.MAL],
+        "default_source": Sources.BANGUMI,
         "sample_query": "Perfect Blue",
         "unicode_icon": "🎭",
         "verb": ("watch", "watched"),
@@ -151,8 +151,8 @@ MEDIA_TYPE_CONFIG = {
         "unit": ("#", "Chapter"),
     },
     MediaTypes.GAME.value: {
-        "sources": [Sources.IGDB],
-        "default_source": Sources.IGDB,
+        "sources": [Sources.BANGUMI, Sources.IGDB],
+        "default_source": Sources.BANGUMI,
         "sample_query": "Half-Life",
         "unicode_icon": "🎮",
         "verb": ("play", "played"),
@@ -173,8 +173,8 @@ MEDIA_TYPE_CONFIG = {
         "date_key": "release_date",
     },
     MediaTypes.BOOK.value: {
-        "sources": [Sources.HARDCOVER, Sources.OPENLIBRARY],
-        "default_source": Sources.HARDCOVER,
+        "sources": [Sources.BANGUMI, Sources.HARDCOVER, Sources.OPENLIBRARY],
+        "default_source": Sources.BANGUMI,
         "sample_query": "The Great Gatsby",
         "unicode_icon": "📖",
         "verb": ("read", "read"),

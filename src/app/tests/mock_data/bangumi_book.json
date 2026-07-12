@@ -1,0 +1,22 @@
+{
+  "id": 9585,
+  "type": 1,
+  "name": "三体",
+  "name_cn": "三体",
+  "summary": "文化大革命如火如荼进行的同时，外星文明与人类文明产生了联系。",
+  "date": "2008-01-01",
+  "images": {
+    "large": "https://example.invalid/bangumi/book-9585-large.jpg",
+    "common": "https://example.invalid/bangumi/book-9585-common.jpg"
+  },
+  "infobox": [
+    {"key": "页数", "value": "302"},
+    {"key": "作者", "value": "刘慈欣"},
+    {"key": "出版社", "value": "重庆出版社"},
+    {"key": "ISBN", "value": "9787536692930"},
+    {"key": "发售日", "value": "2008-01-01"}
+  ],
+  "rating": {"score": 8.7, "total": 7654},
+  "tags": [{"name": "科幻", "count": 2345}],
+  "eps": 23
+}

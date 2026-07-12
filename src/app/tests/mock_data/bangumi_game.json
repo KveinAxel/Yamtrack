@@ -1,0 +1,35 @@
+{
+  "id": 313495,
+  "type": 4,
+  "name": "Ghost of Tsushima",
+  "name_cn": "对马岛之魂",
+  "summary": "在战火中的对马岛,武士境井仁必须开辟新的道路守护家园。",
+  "date": "2020-07-17",
+  "images": {
+    "large": "https://example.invalid/bangumi/game-313495-large.jpg",
+    "common": "https://example.invalid/bangumi/game-313495-common.jpg"
+  },
+  "infobox": [
+    {
+      "key": "平台",
+      "value": [
+        {"v": "PlayStation 4"},
+        {"v": "PlayStation 5"}
+      ]
+    },
+    {"key": "游戏类型", "value": "动作冒险"},
+    {
+      "key": "制作",
+      "value": [
+        {"k": "开发商", "v": "Sucker Punch Productions"},
+        {"k": "发行商", "v": "Sony Interactive Entertainment"}
+      ]
+    }
+  ],
+  "rating": {"score": 7.6, "total": 1284},
+  "tags": [
+    {"name": "开放世界", "count": 420},
+    {"name": "动作", "count": 310}
+  ],
+  "eps": 99
+}

@@ -12,6 +12,17 @@ from .helpers import date_parser
 logger = logging.getLogger(__name__)
 
 
+def _has_bangumi_anime_progress(item, content_number):
+    """Return whether a Bangumi anime has usable aggregate progress."""
+    return (
+        item.source == Sources.BANGUMI.value
+        and item.media_type == MediaTypes.ANIME.value
+        and not isinstance(content_number, bool)
+        and isinstance(content_number, int)
+        and content_number > 0
+    )
+
+
 def process_other(item, events_bulk):
     """Process other types of items and add events to the event list."""
     logger.info("Fetching releases for %s", item)
@@ -81,7 +92,9 @@ def process_other(item, events_bulk):
             ),
         )
 
-    elif item.source == Sources.MANGAUPDATES.value and content_number:
+    elif (
+        item.source == Sources.MANGAUPDATES.value and content_number
+    ) or _has_bangumi_anime_progress(item, content_number):
         content_datetime = datetime.min.replace(tzinfo=ZoneInfo("UTC"))
         events_bulk.append(
             Event(
