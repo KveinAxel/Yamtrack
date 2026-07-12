@@ -5,6 +5,8 @@ from django.contrib.auth import get_user_model
 from django.contrib.staticfiles.testing import StaticLiveServerTestCase
 from playwright.sync_api import expect, sync_playwright
 
+PERFECT_BLUE_LISTS = "#lists-anime-839"  # Bangumi is the default anime source.
+
 
 class IntegrationTest(StaticLiveServerTestCase):
     """Integration tests for the application."""
@@ -48,7 +50,7 @@ class IntegrationTest(StaticLiveServerTestCase):
             "button",
         ).first.click()
         self.page.locator(".absolute > .relative > button:nth-child(2)").first.click()
-        expect(self.page.locator("#lists-anime-437")).to_contain_text(
+        expect(self.page.locator(PERFECT_BLUE_LISTS)).to_contain_text(
             "You haven't created any lists yet.",
         )
 
@@ -74,10 +76,10 @@ class IntegrationTest(StaticLiveServerTestCase):
             "button",
         ).first.click()
         self.page.locator(".absolute > .relative > button:nth-child(2)").first.click()
-        expect(self.page.locator("#lists-anime-437")).to_contain_text("Lists test Add")
+        expect(self.page.locator(PERFECT_BLUE_LISTS)).to_contain_text("Lists test Add")
         self.page.get_by_role("button", name="Add", exact=True).click()
-        expect(self.page.locator("#lists-anime-437")).to_contain_text("Remove")
-        self.page.locator("#lists-anime-437").get_by_role("button").first.click()
+        expect(self.page.locator(PERFECT_BLUE_LISTS)).to_contain_text("Remove")
+        self.page.locator(PERFECT_BLUE_LISTS).get_by_role("button").first.click()
 
         # Edit list
         self.page.get_by_role("link", name="Lists").click()
