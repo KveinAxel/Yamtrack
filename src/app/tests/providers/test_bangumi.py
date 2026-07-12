@@ -425,6 +425,317 @@ class BangumiDetailTests(TestCase):
         self.assertIs(context.exception.__cause__, error)
 
 
+class BangumiEpisodeTests(TestCase):
+    """Test bounded ordinary-episode counting and anime detail mapping."""
+
+    def setUp(self):
+        """Clear anime detail responses before each test."""
+        cache.clear()
+
+    @patch("app.providers.bangumi.services.api_request")
+    def test_counter_uses_official_production_page_limit(self, mock_api_request):
+        """Production requests use Bangumi's documented maximum page size."""
+        mock_api_request.return_value = {
+            "total": 0,
+            "limit": 200,
+            "offset": 0,
+            "data": [],
+        }
+
+        self.assertEqual(bangumi.EPISODE_PAGE_LIMIT, 200)
+        self.assertIsNone(bangumi.ordinary_episode_count(400602))
+        mock_api_request.assert_called_once_with(
+            Sources.BANGUMI.value,
+            "GET",
+            "https://api.bgm.tv/v0/episodes",
+            params={
+                "subject_id": 400602,
+                "type": 0,
+                "limit": 200,
+                "offset": 0,
+            },
+            headers={"User-Agent": bangumi.USER_AGENT},
+        )
+
+    @patch("app.providers.bangumi.EPISODE_PAGE_LIMIT", 2)
+    @patch("app.providers.bangumi.services.api_request")
+    def test_counter_counts_unique_positive_integer_ids_across_all_pages(
+        self,
+        mock_api_request,
+    ):
+        """Duplicate IDs do not inflate the count and pagination advances by rows."""
+        mock_api_request.side_effect = [
+            load_fixture("bangumi_episodes_page_1.json"),
+            load_fixture("bangumi_episodes_page_2.json"),
+        ]
+
+        count = bangumi.ordinary_episode_count("400602")
+
+        self.assertEqual(count, 3)
+        self.assertEqual(mock_api_request.call_count, 2)
+        for index, expected_offset in enumerate((0, 2)):
+            self.assertEqual(
+                mock_api_request.call_args_list[index].args,
+                (
+                    Sources.BANGUMI.value,
+                    "GET",
+                    "https://api.bgm.tv/v0/episodes",
+                ),
+            )
+            self.assertEqual(
+                mock_api_request.call_args_list[index].kwargs,
+                {
+                    "params": {
+                        "subject_id": 400602,
+                        "type": 0,
+                        "limit": 2,
+                        "offset": expected_offset,
+                    },
+                    "headers": {"User-Agent": bangumi.USER_AGENT},
+                },
+            )
+
+    @patch("app.providers.bangumi.EPISODE_PAGE_LIMIT", 2)
+    @patch("app.providers.bangumi.services.api_request")
+    def test_counter_ignores_invalid_episode_ids(self, mock_api_request):
+        """Only unique positive non-boolean integer episode IDs are counted."""
+        invalid_ids = [True, 0, -1, "1200001", None, 1200001, 1200001]
+        mock_api_request.side_effect = [
+            {
+                "total": 7,
+                "limit": 2,
+                "offset": offset,
+                "data": [
+                    {"id": episode_id}
+                    for episode_id in invalid_ids[offset : offset + 2]
+                ],
+            }
+            for offset in range(0, 7, 2)
+        ]
+
+        self.assertEqual(bangumi.ordinary_episode_count(400602), 1)
+
+    @patch("app.providers.bangumi.EPISODE_PAGE_LIMIT", 2)
+    @patch("app.providers.bangumi.services.api_request")
+    def test_counter_returns_none_for_valid_zero_total(self, mock_api_request):
+        """A stable empty collection represents unknown/absent progress."""
+        mock_api_request.return_value = {
+            "total": 0,
+            "limit": 2,
+            "offset": 0,
+            "data": [],
+        }
+
+        self.assertIsNone(bangumi.ordinary_episode_count(400602))
+        mock_api_request.assert_called_once()
+
+    @patch("app.providers.bangumi.EPISODE_PAGE_LIMIT", 2)
+    @patch("app.providers.bangumi.services.api_request")
+    def test_counter_returns_zero_when_positive_total_has_no_valid_ids(
+        self,
+        mock_api_request,
+    ):
+        """Only a zero-total envelope maps to None; an empty unique set is zero."""
+        mock_api_request.return_value = {
+            "total": 2,
+            "limit": 2,
+            "offset": 0,
+            "data": [{"id": True}, {"id": "1200001"}],
+        }
+
+        self.assertEqual(bangumi.ordinary_episode_count(400602), 0)
+
+    @patch("app.providers.bangumi.EPISODE_PAGE_LIMIT", 2)
+    @patch("app.providers.bangumi.services.api_request")
+    def test_counter_rejects_invalid_page_envelopes(self, mock_api_request):
+        """Every page has a complete, internally possible pagination envelope."""
+        valid = {
+            "total": 1,
+            "limit": 2,
+            "offset": 0,
+            "data": [{"id": 1}],
+        }
+        invalid_pages = [
+            None,
+            [],
+            {key: value for key, value in valid.items() if key != "total"},
+            {key: value for key, value in valid.items() if key != "limit"},
+            {key: value for key, value in valid.items() if key != "offset"},
+            {key: value for key, value in valid.items() if key != "data"},
+            {**valid, "total": True},
+            {**valid, "total": -1},
+            {**valid, "limit": True},
+            {**valid, "limit": 0},
+            {**valid, "offset": True},
+            {**valid, "offset": -1},
+            {**valid, "data": {}},
+            {**valid, "total": 1, "data": [{"id": 1}, {"id": 2}]},
+            {**valid, "total": 3, "data": [{"id": 1}, {"id": 2}, {"id": 3}]},
+            {**valid, "data": [None]},
+            {**valid, "data": ["episode"]},
+        ]
+
+        for page in invalid_pages:
+            with self.subTest(page=page):
+                mock_api_request.return_value = page
+                with self.assertRaises(ProviderAPIError) as context:
+                    bangumi.ordinary_episode_count(400602)
+
+                self.assertEqual(context.exception.provider, Sources.BANGUMI.value)
+                self.assertIn("Invalid Bangumi response", str(context.exception))
+                self.assertIsInstance(context.exception.__cause__, ValueError)
+
+    @patch("app.providers.bangumi.EPISODE_PAGE_LIMIT", 2)
+    @patch("app.providers.bangumi.services.api_request")
+    def test_counter_rejects_unstable_or_nonadvancing_pagination(
+        self,
+        mock_api_request,
+    ):
+        """Later pages cannot change totals, coordinates, or stop early."""
+        first = load_fixture("bangumi_episodes_page_1.json")
+        second = load_fixture("bangumi_episodes_page_2.json")
+        invalid_second_pages = [
+            {**second, "total": 5},
+            {**second, "limit": 3},
+            {**second, "offset": 1},
+            {**second, "data": []},
+        ]
+
+        for page in invalid_second_pages:
+            with self.subTest(page=page):
+                mock_api_request.side_effect = [first, page]
+                with self.assertRaises(ProviderAPIError) as context:
+                    bangumi.ordinary_episode_count(400602)
+
+                self.assertIsInstance(context.exception.__cause__, ValueError)
+
+    @patch("app.providers.bangumi.EPISODE_PAGE_LIMIT", 2)
+    @patch("app.providers.bangumi.services.api_request")
+    def test_counter_refuses_more_pages_than_initial_total_and_limit_imply(
+        self,
+        mock_api_request,
+    ):
+        """Short pages cannot force unbounded requests despite advancing offsets."""
+        mock_api_request.side_effect = [
+            {"total": 4, "limit": 2, "offset": 0, "data": [{"id": 1}]},
+            {"total": 4, "limit": 2, "offset": 1, "data": [{"id": 2}]},
+            {"total": 4, "limit": 2, "offset": 2, "data": [{"id": 3}]},
+        ]
+
+        with self.assertRaises(ProviderAPIError) as context:
+            bangumi.ordinary_episode_count(400602)
+
+        self.assertEqual(mock_api_request.call_count, 2)
+        self.assertIsInstance(context.exception.__cause__, ValueError)
+
+    @patch("app.providers.bangumi.services.api_request")
+    def test_counter_normalizes_transport_and_json_errors(self, mock_api_request):
+        """Request and JSON decoding failures become chained provider errors."""
+        errors = [
+            requests.exceptions.Timeout("timed out"),
+            requests.exceptions.JSONDecodeError("invalid JSON", "{", 1),
+        ]
+
+        for error in errors:
+            with self.subTest(error=error):
+                mock_api_request.side_effect = error
+                with self.assertRaises(ProviderAPIError) as context:
+                    bangumi.ordinary_episode_count(400602)
+
+                self.assertEqual(context.exception.provider, Sources.BANGUMI.value)
+                self.assertIs(context.exception.__cause__, error)
+
+    @patch("app.providers.bangumi.EPISODE_PAGE_LIMIT", 2)
+    @patch("app.providers.bangumi.services.api_request")
+    def test_anime_maps_common_fields_and_only_aggregate_episode_count(
+        self,
+        mock_api_request,
+    ):
+        """Anime details expose the aggregate ordinary count, never episode rows."""
+        mock_api_request.side_effect = [
+            load_fixture("bangumi_anime.json"),
+            load_fixture("bangumi_episodes_page_1.json"),
+            load_fixture("bangumi_episodes_page_2.json"),
+        ]
+
+        response = bangumi.subject("400602", MediaTypes.ANIME.value)
+
+        self.assertEqual(
+            response,
+            {
+                "media_id": "400602",
+                "source": Sources.BANGUMI.value,
+                "source_url": "https://bgm.tv/subject/400602",
+                "media_type": MediaTypes.ANIME.value,
+                "title": "葬送的芙莉莲",
+                "max_progress": 3,
+                "image": "https://example.invalid/bangumi/anime-400602-large.jpg",
+                "synopsis": load_fixture("bangumi_anime.json")["summary"],
+                "genres": ["奇幻", "治愈"],
+                "score": 9.0,
+                "score_count": 19876,
+                "details": {
+                    "format": "TV",
+                    "start_date": "2023-09-29",
+                    "episodes": 3,
+                },
+            },
+        )
+        serialized = json.dumps(response, ensure_ascii=False)
+        self.assertNotIn("1200001", serialized)
+        self.assertNotIn("不可持久化", serialized)
+        self.assertEqual(mock_api_request.call_count, 3)
+
+    @patch("app.providers.bangumi.EPISODE_PAGE_LIMIT", 2)
+    @patch("app.providers.bangumi.services.api_request")
+    def test_anime_complete_result_uses_exact_cache_once(self, mock_api_request):
+        """The final anime dict caches detail and all pages as one completed result."""
+        mock_api_request.side_effect = [
+            load_fixture("bangumi_anime.json"),
+            load_fixture("bangumi_episodes_page_1.json"),
+            load_fixture("bangumi_episodes_page_2.json"),
+        ]
+
+        with (
+            patch("app.providers.bangumi.cache.get", wraps=cache.get) as mock_cache_get,
+            patch("app.providers.bangumi.cache.set", wraps=cache.set) as mock_cache_set,
+        ):
+            first = bangumi.subject("0400602", MediaTypes.ANIME.value)
+            second = bangumi.subject(400602, MediaTypes.ANIME.value)
+
+        self.assertEqual(first, second)
+        self.assertEqual(mock_api_request.call_count, 3)
+        self.assertEqual(first["media_id"], "400602")
+        self.assertEqual(
+            mock_cache_get.call_args_list,
+            [
+                (("bangumi_anime_400602",), {}),
+                (("bangumi_anime_400602",), {}),
+            ],
+        )
+        mock_cache_set.assert_called_once_with("bangumi_anime_400602", first)
+
+    @patch("app.providers.bangumi.EPISODE_PAGE_LIMIT", 2)
+    @patch("app.providers.bangumi.cache.set")
+    @patch("app.providers.bangumi.services.api_request")
+    def test_anime_pagination_error_never_caches_partial_detail(
+        self,
+        mock_api_request,
+        mock_cache_set,
+    ):
+        """Anime metadata is cached only after episode pagination succeeds."""
+        mock_api_request.side_effect = [
+            load_fixture("bangumi_anime.json"),
+            load_fixture("bangumi_episodes_page_1.json"),
+            requests.exceptions.Timeout("episode timeout"),
+        ]
+
+        with self.assertRaises(ProviderAPIError):
+            bangumi.subject("400602", MediaTypes.ANIME.value)
+
+        mock_cache_set.assert_not_called()
+
+
 class BangumiSearchTests(TestCase):
     """Test deterministic Bangumi searches."""
 

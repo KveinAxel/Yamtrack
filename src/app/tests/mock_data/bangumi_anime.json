@@ -1,0 +1,22 @@
+{
+  "id": 400602,
+  "type": 2,
+  "name": "葬送のフリーレン",
+  "name_cn": "葬送的芙莉莲",
+  "summary": "勇者一行结束旅程后，精灵魔法使重新理解时间与相遇。",
+  "date": "2023-09-29",
+  "images": {
+    "large": "https://example.invalid/bangumi/anime-400602-large.jpg",
+    "common": "https://example.invalid/bangumi/anime-400602-common.jpg"
+  },
+  "infobox": [
+    {"key": "平台", "value": "TV"}
+  ],
+  "rating": {"score": 9.0, "total": 19876},
+  "tags": [
+    {"name": "奇幻", "count": 8021},
+    {"name": "治愈", "count": 6142}
+  ],
+  "eps": 999,
+  "total_episodes": 999
+}

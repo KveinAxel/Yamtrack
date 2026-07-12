@@ -10,6 +10,7 @@ from app.providers import services
 
 BASE_URL = "https://api.bgm.tv/v0"
 USER_AGENT = "KveinAxel-Yamtrack/0.1 (https://github.com/KveinAxel/Yamtrack)"
+EPISODE_PAGE_LIMIT = 200
 SUBJECT_TYPES = {
     MediaTypes.BOOK.value: 1,
     MediaTypes.ANIME.value: 2,
@@ -240,6 +241,120 @@ def _book_details(response, info):
     return pages, details
 
 
+def _validate_episode_data(page_data, limit):
+    """Validate episode row containers without retaining their contents."""
+    if not isinstance(page_data, list):
+        _raise_detail_schema_error("episode data must be a list")
+    if any(not isinstance(item, dict) for item in page_data):
+        _raise_detail_schema_error("episode data items must be objects")
+    if len(page_data) > limit:
+        _raise_detail_schema_error("episode data cannot exceed the page limit")
+
+
+def _validate_episode_page(response, expected_total, expected_offset):
+    """Validate one stable Bangumi ordinary-episode response page."""
+    if not isinstance(response, dict):
+        _raise_detail_schema_error("episode page must be an object")
+
+    total = response.get("total")
+    limit = response.get("limit")
+    response_offset = response.get("offset")
+    if isinstance(total, bool) or not isinstance(total, int) or total < 0:
+        _raise_detail_schema_error("episode total must be a non-negative integer")
+    if (
+        isinstance(limit, bool)
+        or not isinstance(limit, int)
+        or limit != EPISODE_PAGE_LIMIT
+    ):
+        _raise_detail_schema_error("episode limit must match the request")
+    if (
+        isinstance(response_offset, bool)
+        or not isinstance(response_offset, int)
+        or response_offset < 0
+        or response_offset != expected_offset
+    ):
+        _raise_detail_schema_error("episode offset must match the request")
+    page_data = response.get("data")
+    _validate_episode_data(page_data, limit)
+    if response_offset > total or response_offset + len(page_data) > total:
+        _raise_detail_schema_error("episode page exceeds its total")
+    if expected_total is not None and total != expected_total:
+        _raise_detail_schema_error("episode total changed during pagination")
+    if total == 0 and (response_offset != 0 or page_data):
+        _raise_detail_schema_error("zero-total episode page must be empty")
+    if response_offset < total and not page_data:
+        _raise_detail_schema_error("episode pagination stopped before completion")
+    return total, page_data
+
+
+def ordinary_episode_count(subject_id):
+    """Count unique ordinary Bangumi episodes without retaining episode rows."""
+    canonical_subject_id = positive_int(subject_id)
+    if canonical_subject_id is None:
+        msg = f"Invalid Bangumi subject ID: {subject_id}"
+        raise ValueError(msg)
+
+    expected_total = None
+    offset = 0
+    seen_ids = set()
+    pages_fetched = 0
+    max_pages = None
+
+    while expected_total is None or offset < expected_total:
+        if max_pages is not None and pages_fetched >= max_pages:
+            _raise_detail_schema_error("episode pagination exceeded its page bound")
+        try:
+            response = services.api_request(
+                Sources.BANGUMI.value,
+                "GET",
+                f"{BASE_URL}/episodes",
+                params={
+                    "subject_id": canonical_subject_id,
+                    "type": 0,
+                    "limit": EPISODE_PAGE_LIMIT,
+                    "offset": offset,
+                },
+                headers={"User-Agent": USER_AGENT},
+            )
+        except requests.RequestException as error:
+            raise services.ProviderAPIError(Sources.BANGUMI.value, error) from error
+
+        total, page_data = _validate_episode_page(response, expected_total, offset)
+        pages_fetched += 1
+        if expected_total is None:
+            expected_total = total
+            max_pages = (
+                (expected_total + EPISODE_PAGE_LIMIT - 1) // EPISODE_PAGE_LIMIT
+                if expected_total
+                else 1
+            )
+
+        previous_offset = offset
+        offset += len(page_data)
+        if expected_total and offset <= previous_offset:
+            _raise_detail_schema_error("episode pagination did not advance")
+
+        for item in page_data:
+            episode_id = item.get("id")
+            if (
+                not isinstance(episode_id, bool)
+                and isinstance(episode_id, int)
+                and episode_id > 0
+            ):
+                seen_ids.add(episode_id)
+
+    return None if expected_total == 0 else len(seen_ids)
+
+
+def _anime_details(response, info, episode_count):
+    """Map approved Bangumi anime detail fields."""
+    return {
+        "format": first_infobox_value(info, "平台"),
+        "start_date": _optional_string(response, "date"),
+        "episodes": episode_count,
+    }
+
+
 def subject(media_id, media_type):
     """Return normalized Bangumi metadata for one subject."""
     if media_type not in SUBJECT_TYPES:
@@ -276,6 +391,9 @@ def subject(media_id, media_type):
         details = _game_details(response, info)
     elif media_type == MediaTypes.BOOK.value:
         max_progress, details = _book_details(response, info)
+    elif media_type == MediaTypes.ANIME.value:
+        max_progress = ordinary_episode_count(requested_id)
+        details = _anime_details(response, info, max_progress)
     else:
         details = {}
 
