@@ -11,7 +11,7 @@ from app.providers import services
 BASE_URL = "https://api.bgm.tv/v0"
 USER_AGENT = "KveinAxel-Yamtrack/0.1 (https://github.com/KveinAxel/Yamtrack)"
 EPISODE_PAGE_LIMIT = 200
-SEARCH_PAGE_LIMIT = 20
+SEARCH_PAGE_LIMIT = 20  # Bangumi caps search responses at 20 items.
 SUBJECT_TYPES = {
     MediaTypes.BOOK.value: 1,
     MediaTypes.ANIME.value: 2,
@@ -459,21 +459,24 @@ def _validate_subject(subject, expected_type):
 
     title = localized_title(subject)
     images = subject.get("images")
-    if not isinstance(images, dict):
+    if images is not None and not isinstance(images, dict):
         _raise_schema_error("invalid subject schema: images must be an object")
-    image = images.get("large")
-    if not isinstance(image, str) or not image.strip():
-        _raise_schema_error(
-            "invalid subject schema: images.large must be a non-empty string",
-        )
 
-    return {"id": media_id, "title": title, "image": image.strip()}
+    image = settings.IMG_NONE
+    if images:
+        for field in ("large", "common"):
+            candidate = images.get(field)
+            if isinstance(candidate, str) and candidate.strip():
+                image = candidate.strip()
+                break
+
+    return {"id": media_id, "title": title, "image": image}
 
 
 def _format_subject(validated_subject, media_type):
     """Format validated subject values as a Yamtrack search result."""
     return {
-        "media_id": validated_subject["id"],
+        "media_id": str(validated_subject["id"]),
         "source": Sources.BANGUMI.value,
         "media_type": media_type,
         "title": validated_subject["title"],
@@ -493,7 +496,8 @@ def search(media_type, query, page):
         return data
 
     subject_type = SUBJECT_TYPES[media_type]
-    offset = (page - 1) * SEARCH_PAGE_LIMIT
+    per_page = min(settings.PER_PAGE, SEARCH_PAGE_LIMIT)
+    offset = (page - 1) * per_page
     params = {
         "keyword": query,
         "sort": "match",
@@ -506,21 +510,21 @@ def search(media_type, query, page):
             "POST",
             f"{BASE_URL}/search/subjects",
             params=params,
-            query_params={"limit": SEARCH_PAGE_LIMIT, "offset": offset},
+            query_params={"limit": per_page, "offset": offset},
             headers={"User-Agent": USER_AGENT},
             retry_rate_limit=False,
         )
     except requests.RequestException as error:
         raise services.ProviderAPIError(Sources.BANGUMI.value, error) from error
 
-    _validate_pagination(response, SEARCH_PAGE_LIMIT, offset)
+    _validate_pagination(response, per_page, offset)
     results = [
         _format_subject(_validate_subject(subject, subject_type), media_type)
         for subject in response["data"]
     ]
     data = helpers.format_search_response(
         page,
-        SEARCH_PAGE_LIMIT,
+        per_page,
         response["total"],
         results,
     )

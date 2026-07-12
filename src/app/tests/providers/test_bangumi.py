@@ -5,7 +5,7 @@ from unittest.mock import patch
 import requests
 from django.conf import settings
 from django.core.cache import cache
-from django.test import TestCase
+from django.test import TestCase, override_settings
 
 from app.models import MediaTypes, Sources
 from app.providers import bangumi
@@ -747,8 +747,9 @@ class BangumiSearchTests(TestCase):
         """Clear cached search responses before each test."""
         cache.clear()
 
-    def test_search_uses_provider_page_limit(self):
-        """Bangumi search locks the production API page cap at 20."""
+    def test_search_caps_configured_page_limit_at_provider_maximum(self):
+        """The default page size is capped at Bangumi's server maximum."""
+        self.assertEqual(settings.PER_PAGE, 24)
         self.assertEqual(bangumi.SEARCH_PAGE_LIMIT, 20)
 
     def test_localized_title_prefers_trimmed_chinese_title(self):
@@ -801,7 +802,7 @@ class BangumiSearchTests(TestCase):
                 "sort": "match",
                 "filter": {"type": [2]},
             },
-            query_params={"limit": 20, "offset": 0},
+            query_params={"limit": bangumi.SEARCH_PAGE_LIMIT, "offset": 0},
             headers={
                 "User-Agent": (
                     "KveinAxel-Yamtrack/0.1 "
@@ -839,7 +840,7 @@ class BangumiSearchTests(TestCase):
                 self.assertNotIn("offset", kwargs["params"])
                 self.assertEqual(
                     kwargs["query_params"],
-                    {"limit": 20, "offset": 0},
+                    {"limit": bangumi.SEARCH_PAGE_LIMIT, "offset": 0},
                 )
                 self.assertEqual(kwargs["headers"], {"User-Agent": bangumi.USER_AGENT})
 
@@ -853,14 +854,60 @@ class BangumiSearchTests(TestCase):
         self.assertEqual(response["results"][0]["title"], "Original Title")
 
     @patch("app.providers.bangumi.services.api_request")
+    def test_search_image_falls_back_from_large_to_common_to_placeholder(
+        self,
+        mock_api_request,
+    ):
+        """Optional search images use the best available safe fallback."""
+        valid_subject = load_fixture("bangumi_search_anime.json")["data"][0]
+        cases = [
+            (
+                "large",
+                {"large": " https://example.invalid/large.jpg ", "common": "common"},
+                "https://example.invalid/large.jpg",
+            ),
+            (
+                "common",
+                {"large": None, "common": " https://example.invalid/common.jpg "},
+                "https://example.invalid/common.jpg",
+            ),
+            ("missing images", "missing", settings.IMG_NONE),
+            ("null images", None, settings.IMG_NONE),
+            ("empty images", {}, settings.IMG_NONE),
+            ("null candidates", {"large": None, "common": None}, settings.IMG_NONE),
+        ]
+
+        for index, (label, images, expected_image) in enumerate(cases):
+            with self.subTest(label=label):
+                cache.clear()
+                subject = dict(valid_subject)
+                if images == "missing":
+                    subject.pop("images", None)
+                else:
+                    subject["images"] = images
+                response = load_fixture("bangumi_search_anime.json")
+                response["data"] = [subject]
+                mock_api_request.return_value = response
+
+                result = bangumi.search(
+                    MediaTypes.ANIME.value,
+                    f"image-fallback-{index}",
+                    1,
+                )
+
+                self.assertEqual(result["results"][0]["image"], expected_image)
+
+    @patch("app.providers.bangumi.services.api_request")
     def test_search_formats_pagination_and_result_fields(self, mock_api_request):
         """Search returns Yamtrack fields and derives the requested offset."""
         fixture = load_fixture("bangumi_search_game.json")
         fixture["total"] = 49
-        fixture["offset"] = 20
+        fixture["offset"] = bangumi.SEARCH_PAGE_LIMIT
         mock_api_request.return_value = fixture
 
         response = bangumi.search(MediaTypes.GAME.value, "示例冒险", 2)
+
+        self.assertEqual(response["results"][0]["media_id"], "900001")
 
         self.assertEqual(
             response,
@@ -870,7 +917,7 @@ class BangumiSearchTests(TestCase):
                 "total_pages": 3,
                 "results": [
                     {
-                        "media_id": 900001,
+                        "media_id": "900001",
                         "source": Sources.BANGUMI.value,
                         "media_type": MediaTypes.GAME.value,
                         "title": "示例冒险",
@@ -888,11 +935,38 @@ class BangumiSearchTests(TestCase):
                 "filter": {"type": [4]},
             },
         )
-        self.assertEqual(kwargs["query_params"], {"limit": 20, "offset": 20})
+        self.assertEqual(
+            kwargs["query_params"],
+            {
+                "limit": bangumi.SEARCH_PAGE_LIMIT,
+                "offset": bangumi.SEARCH_PAGE_LIMIT,
+            },
+        )
+
+    @override_settings(PER_PAGE=7)
+    @patch("app.providers.bangumi.services.api_request")
+    def test_search_uses_settings_per_page_throughout_pagination(
+        self,
+        mock_api_request,
+    ):
+        """A page size below the provider cap drives every pagination stage."""
+        fixture = load_fixture("bangumi_search_game.json")
+        fixture.update({"total": 15, "limit": 7, "offset": 7})
+        mock_api_request.return_value = fixture
+
+        response = bangumi.search(MediaTypes.GAME.value, "configured-page-size", 2)
+
+        self.assertEqual(response["page"], 2)
+        self.assertEqual(response["total_results"], 15)
+        self.assertEqual(response["total_pages"], 3)
+        self.assertEqual(
+            mock_api_request.call_args.kwargs["query_params"],
+            {"limit": 7, "offset": 7},
+        )
 
     @patch("app.providers.bangumi.services.api_request")
     def test_search_accepts_only_real_provider_pagination(self, mock_api_request):
-        """The real limit 20 envelope succeeds while mismatches are rejected."""
+        """The configured limit envelope succeeds while mismatches are rejected."""
         valid = load_fixture("bangumi_search_anime.json")
         mock_api_request.return_value = valid
 
@@ -901,7 +975,7 @@ class BangumiSearchTests(TestCase):
         self.assertEqual(response["page"], 1)
         self.assertEqual(response["total_pages"], 1)
 
-        for index, invalid_limit in enumerate((10, 24)):
+        for index, invalid_limit in enumerate((10, settings.PER_PAGE)):
             with self.subTest(limit=invalid_limit):
                 cache.clear()
                 mock_api_request.return_value = {**valid, "limit": invalid_limit}
@@ -913,7 +987,7 @@ class BangumiSearchTests(TestCase):
                     )
 
         cache.clear()
-        mock_api_request.return_value = {**valid, "offset": 20}
+        mock_api_request.return_value = {**valid, "offset": bangumi.SEARCH_PAGE_LIMIT}
         with self.assertRaises(ProviderAPIError):
             bangumi.search(MediaTypes.ANIME.value, "invalid-offset", 1)
 
@@ -1036,21 +1110,9 @@ class BangumiSearchTests(TestCase):
                 "name",
             ),
             (
-                "missing images",
-                {k: v for k, v in valid_subject.items() if k != "images"},
+                "invalid images",
+                {**valid_subject, "images": "not an object"},
                 "images",
-            ),
-            ("non-object images", {**valid_subject, "images": None}, "images"),
-            ("missing large image", {**valid_subject, "images": {}}, "images.large"),
-            (
-                "non-string large image",
-                {**valid_subject, "images": {"large": None}},
-                "images.large",
-            ),
-            (
-                "blank large image",
-                {**valid_subject, "images": {"large": "  "}},
-                "images.large",
             ),
         ]
 
