@@ -47,6 +47,8 @@ class Sources(models.TextChoices):
     COMICVINE = "comicvine", "Comic Vine"
     BGG = "bgg", "BoardGameGeek"
     BANGUMI = "bangumi", "Bangumi"
+    NEODB = "neodb", "NeoDB"
+    DOUBAN = "douban", "Douban"
     MANUAL = "manual", "Manual"
 
 

@@ -1,0 +1,36 @@
+{
+  "data": [
+    {
+      "uuid": "54lhOEeEYQP0eyJJaMdVUX",
+      "category": "book",
+      "display_title": "缠斗",
+      "title": "缠斗",
+      "localized_title": [
+        {
+          "lang": "zh-cn",
+          "text": "缠斗"
+        }
+      ],
+      "cover_image_url": "https://neodb.social/m/book/2021/10/2409665bcb-a10c-4d4c-b98d-61777aa178f7.jpg",
+      "rating": null,
+      "rating_count": 2
+    },
+    {
+      "uuid": "0OgFa3TJ5ZjfBwyNkxArEs",
+      "category": "book",
+      "display_title": "与“现实”缠斗",
+      "title": "与“现实”缠斗",
+      "localized_title": [
+        {
+          "lang": "zh-cn",
+          "text": "与“现实”缠斗"
+        }
+      ],
+      "cover_image_url": "https://neodb.social/m/item/doubanbook/2024/10/14/e1d7e868-c5fb-443f-bc2b-5129cdc7a555.jpg",
+      "rating": null,
+      "rating_count": 0
+    }
+  ],
+  "pages": 1,
+  "count": 2
+}

@@ -198,7 +198,11 @@ class ImportYamtrackPartials(TestCase):
         self.assertEqual(
             self.mock_search.call_args_list,
             [
+                call("book", "Warlock", 1, "neodb"),
+                call("book", "Warlock", 1, "douban"),
                 call("book", "Warlock", 1, "bangumi"),
+                call("book", "0312980388", 1, "neodb"),
+                call("book", "0312980388", 1, "douban"),
                 call("book", "0312980388", 1, "bangumi"),
                 call("book", "0312980388", 1, "hardcover"),
                 call("movie", "Perfect Blue", 1, "tmdb"),
@@ -304,6 +308,8 @@ class YamtrackMissingMetadataTests(TestCase):
         """Empty results advance providers sequentially and stop on a hit."""
         mock_search.side_effect = [
             {"results": []},
+            {"results": []},
+            {"results": []},
             {
                 "results": [
                     {
@@ -328,6 +334,8 @@ class YamtrackMissingMetadataTests(TestCase):
         self.assertEqual(
             mock_search.call_args_list,
             [
+                call("book", "0312980388", 1, "neodb"),
+                call("book", "0312980388", 1, "douban"),
                 call("book", "0312980388", 1, "bangumi"),
                 call("book", "0312980388", 1, "hardcover"),
             ],
@@ -400,6 +408,8 @@ class YamtrackMissingMetadataTests(TestCase):
         self.assertEqual(
             mock_search.call_args_list,
             [
+                call("book", "Missing Book", 1, "neodb"),
+                call("book", "Missing Book", 1, "douban"),
                 call("book", "Missing Book", 1, "bangumi"),
                 call("book", "Missing Book", 1, "hardcover"),
                 call("book", "Missing Book", 1, "openlibrary"),
@@ -407,14 +417,17 @@ class YamtrackMissingMetadataTests(TestCase):
         )
         self.assertIn("book", str(context.exception))
         self.assertIn("Missing Book", str(context.exception))
-        self.assertIn("bangumi, hardcover, openlibrary", str(context.exception))
+        self.assertIn(
+            "neodb, douban, bangumi, hardcover, openlibrary",
+            str(context.exception),
+        )
 
     @patch("integrations.imports.yamtrack.services.search")
     def test_provider_error_is_not_treated_as_empty_result(self, mock_search):
         """Provider failures propagate instead of triggering another provider."""
         error = services.ProviderAPIError(
-            "bangumi",
-            ConnectionError("Bangumi unavailable"),
+            "neodb",
+            ConnectionError("NeoDB unavailable"),
         )
         mock_search.side_effect = error
         row = {
@@ -429,7 +442,7 @@ class YamtrackMissingMetadataTests(TestCase):
             self.importer._handle_missing_metadata(row, "book", None, None)
 
         self.assertIs(context.exception, error)
-        mock_search.assert_called_once_with("book", "Book", 1, "bangumi")
+        mock_search.assert_called_once_with("book", "Book", 1, "neodb")
 
     @patch("integrations.imports.yamtrack.services.search")
     def test_blank_season_source_uses_only_tmdb(self, mock_search):
@@ -473,4 +486,7 @@ class YamtrackMissingMetadataTests(TestCase):
 
         self.assertIn("book", str(context.exception))
         self.assertIn("Missing Book", str(context.exception))
-        self.assertIn("bangumi, hardcover, openlibrary", str(context.exception))
+        self.assertIn(
+            "neodb, douban, bangumi, hardcover, openlibrary",
+            str(context.exception),
+        )

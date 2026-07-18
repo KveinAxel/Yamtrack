@@ -52,7 +52,52 @@ PY
 The command sends no credentials and does not mutate the Yamtrack database.
 These live-API smoke tests are operator checks, not CI tests.
 
+## Book sources (NeoDB and Douban)
+
+Ordinary Chinese books are served by two additional first-class sources:
+
+- `neodb` (default book source): the open `neodb.social` catalog API. Search
+  uses `GET /api/catalog/search?category=book`; metadata uses
+  `GET /api/book/<uuid>`. Anonymous read access only; the provider must never
+  call `catalog/fetch`, which has produced mis-merged items.
+- `douban` (explicit fallback button): the unofficial
+  `book.douban.com/j/subject_suggest` endpoint plus subject-page parsing
+  (ld+json, og meta, `#info` panel). Douban has no official API, so this
+  surface is fragile by design: anti-bot interstitials and layout changes must
+  raise explicit Douban provider errors, never silent fallbacks. Traffic is
+  limited to 1 request/second and detail pages are Redis-cached.
+
+Operator smoke test for both sources (read-only, no credentials):
+
+```sh
+YAMTRACK_CONTAINER=yamtrack
+docker exec -i -w /yamtrack "$YAMTRACK_CONTAINER" \
+  /yamtrack/.venv/bin/python manage.py shell <<'PY'
+from app.providers import douban, neodb
+
+results = neodb.search("book", "缠斗", 1)["results"]
+assert any(r["media_id"] == "54lhOEeEYQP0eyJJaMdVUX" for r in results), results
+book = neodb.book("54lhOEeEYQP0eyJJaMdVUX")
+assert book["title"] == "缠斗", book
+assert book["details"]["isbn"] == "9787512007307", book
+print("neodb", book["title"], book["details"]["publish_date"], "OK")
+
+results = douban.search("book", "缠斗", 1)["results"]
+assert any(r["media_id"] == "38409776" for r in results), results
+book = douban.book("38409776")
+assert book["title"] == "缠斗", book
+assert "翟东升" in (book["details"]["author"] or ""), book
+print("douban", book["title"], book["details"]["publish_date"], "OK")
+PY
+```
+
+## Rollback boundary
+
 Before every image change, follow the Homelab Yamtrack runbook and create a
 validated logical dump. After Bangumi-backed rows exist, rollback requires a
 Bangumi-aware custom image or restoring the pre-custom dump and discarding
-newer Bangumi rows.
+newer Bangumi rows. After NeoDB- or Douban-backed rows exist, rollback
+additionally requires an image that understands both sources (the first such
+image supersedes `sha-6ee2cecf` as the oldest safe target); restoring an older
+image means restoring the matching pre-deployment dump and discarding newer
+rows.
