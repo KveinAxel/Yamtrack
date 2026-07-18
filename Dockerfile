@@ -7,6 +7,10 @@ ENV UV_NO_DEV=1
 ENV UV_COMPILE_BYTECODE=1
 # Copy from cache instead of symlinking (cache is discarded with the builder)
 ENV UV_LINK_MODE=copy
+# Overridable package index for builders behind throttled PyPI routes
+ARG UV_DEFAULT_INDEX=https://pypi.org/simple
+ENV UV_DEFAULT_INDEX=${UV_DEFAULT_INDEX}
+ENV UV_HTTP_TIMEOUT=300
 
 WORKDIR /yamtrack
 
