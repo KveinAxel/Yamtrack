@@ -189,19 +189,24 @@ class ServicesTests(TestCase):
             )
         mock_sleep.assert_called_once_with(3)
 
-    def test_bangumi_is_first_and_default_source_for_supported_media(self):
-        """Chinese-first media types expose Bangumi before legacy providers."""
+    def test_chinese_first_source_ordering_and_defaults(self):
+        """Chinese-first media types expose localized providers before legacy ones."""
         expected = {
-            MediaTypes.ANIME.value: [Sources.BANGUMI, Sources.MAL],
-            MediaTypes.GAME.value: [Sources.BANGUMI, Sources.IGDB],
-            MediaTypes.BOOK.value: [
-                Sources.BANGUMI,
-                Sources.HARDCOVER,
-                Sources.OPENLIBRARY,
-            ],
+            MediaTypes.ANIME.value: ([Sources.BANGUMI, Sources.MAL], Sources.BANGUMI),
+            MediaTypes.GAME.value: ([Sources.BANGUMI, Sources.IGDB], Sources.BANGUMI),
+            MediaTypes.BOOK.value: (
+                [
+                    Sources.NEODB,
+                    Sources.DOUBAN,
+                    Sources.BANGUMI,
+                    Sources.HARDCOVER,
+                    Sources.OPENLIBRARY,
+                ],
+                Sources.NEODB,
+            ),
         }
 
-        for media_type, sources in expected.items():
+        for media_type, (sources, default) in expected.items():
             with self.subTest(media_type=media_type):
                 self.assertEqual(
                     config.MEDIA_TYPE_CONFIG[media_type]["sources"],
@@ -209,18 +214,17 @@ class ServicesTests(TestCase):
                 )
                 self.assertEqual(
                     config.MEDIA_TYPE_CONFIG[media_type]["default_source"],
-                    Sources.BANGUMI,
+                    default,
                 )
 
     @patch("app.providers.services.bangumi.search")
     def test_default_sources_dispatch_supported_media_to_bangumi(self, mock_search):
-        """Configured defaults drive anime, game, and book searches to Bangumi."""
+        """Configured defaults drive anime and game searches to Bangumi."""
         mock_search.return_value = {"results": []}
 
         for media_type in (
             MediaTypes.ANIME.value,
             MediaTypes.GAME.value,
-            MediaTypes.BOOK.value,
         ):
             default_source = config.MEDIA_TYPE_CONFIG[media_type]["default_source"]
             result = services.search(
@@ -236,9 +240,104 @@ class ServicesTests(TestCase):
             [
                 call(MediaTypes.ANIME.value, "query", 1),
                 call(MediaTypes.GAME.value, "query", 1),
-                call(MediaTypes.BOOK.value, "query", 1),
             ],
         )
+
+    @patch("app.providers.services.neodb.search")
+    def test_default_book_source_dispatches_to_neodb(self, mock_search):
+        """The configured book default drives searches to NeoDB."""
+        mock_search.return_value = {"results": []}
+
+        default_source = config.MEDIA_TYPE_CONFIG[MediaTypes.BOOK.value][
+            "default_source"
+        ]
+        result = services.search(
+            MediaTypes.BOOK.value,
+            "query",
+            1,
+            source=default_source.value,
+        )
+
+        self.assertEqual(result, {"results": []})
+        mock_search.assert_called_once_with(MediaTypes.BOOK.value, "query", 1)
+
+    @patch("app.providers.services.douban.search")
+    def test_douban_book_source_dispatches_to_douban(self, mock_search):
+        """Selecting the Douban button drives book searches to Douban."""
+        mock_search.return_value = {"results": []}
+
+        result = services.search(
+            MediaTypes.BOOK.value,
+            "query",
+            1,
+            source=Sources.DOUBAN.value,
+        )
+
+        self.assertEqual(result, {"results": []})
+        mock_search.assert_called_once_with(MediaTypes.BOOK.value, "query", 1)
+
+    @patch("app.providers.douban.book")
+    @patch("app.providers.neodb.book")
+    def test_get_media_metadata_dispatches_neodb_and_douban_books(
+        self,
+        mock_neodb_book,
+        mock_douban_book,
+    ):
+        """Book metadata requests reach the matching new provider."""
+        mock_neodb_book.return_value = {"media_id": "54lhOEeEYQP0eyJJaMdVUX"}
+        mock_douban_book.return_value = {"media_id": "38409776"}
+
+        self.assertEqual(
+            services.get_media_metadata(
+                MediaTypes.BOOK.value,
+                "54lhOEeEYQP0eyJJaMdVUX",
+                Sources.NEODB.value,
+            ),
+            {"media_id": "54lhOEeEYQP0eyJJaMdVUX"},
+        )
+        self.assertEqual(
+            services.get_media_metadata(
+                MediaTypes.BOOK.value,
+                "38409776",
+                Sources.DOUBAN.value,
+            ),
+            {"media_id": "38409776"},
+        )
+        mock_neodb_book.assert_called_once_with("54lhOEeEYQP0eyJJaMdVUX")
+        mock_douban_book.assert_called_once_with("38409776")
+
+    def test_neodb_and_douban_limiters_use_dedicated_redis_buckets(self):
+        """NeoDB and Douban traffic uses dedicated 1 req/s Redis limiters."""
+        cases = [
+            (
+                "https://neodb.social/",
+                "https://neodb.social/api/catalog/search",
+                services.neodb_adapter,
+                services.neodb_bucket_key,
+            ),
+            (
+                "https://book.douban.com/",
+                "https://book.douban.com/j/subject_suggest",
+                services.douban_adapter,
+                services.douban_bucket_key,
+            ),
+        ]
+        for mount, request_url, adapter, bucket_key in cases:
+            with self.subTest(mount=mount):
+                self.assertIs(services.session.adapters[mount], adapter)
+                self.assertIs(services.session.get_adapter(request_url), adapter)
+
+                factory = adapter.limiter.bucket_factory
+                self.assertIs(factory.bucket_class, RedisBucket)
+                self.assertIs(factory.bucket_init_kwargs["redis"], services.redis_db)
+                self.assertEqual(
+                    factory.bucket_init_kwargs["bucket_key"],
+                    bucket_key,
+                )
+                self.assertNotEqual(bucket_key, services.bucket_key)
+                self.assertEqual(len(factory.rates), 1)
+                self.assertEqual(factory.rates[0].limit, 1)
+                self.assertEqual(factory.rates[0].interval, 1000)
 
     def test_bangumi_limiter_uses_exact_shared_redis_prefix(self):
         """Bangumi traffic uses a shared Redis limiter only under the v0 path."""

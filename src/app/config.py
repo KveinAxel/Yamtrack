@@ -173,8 +173,14 @@ MEDIA_TYPE_CONFIG = {
         "date_key": "release_date",
     },
     MediaTypes.BOOK.value: {
-        "sources": [Sources.BANGUMI, Sources.HARDCOVER, Sources.OPENLIBRARY],
-        "default_source": Sources.BANGUMI,
+        "sources": [
+            Sources.NEODB,
+            Sources.DOUBAN,
+            Sources.BANGUMI,
+            Sources.HARDCOVER,
+            Sources.OPENLIBRARY,
+        ],
+        "default_source": Sources.NEODB,
         "sample_query": "The Great Gatsby",
         "unicode_icon": "📖",
         "verb": ("read", "read"),

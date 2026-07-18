@@ -14,11 +14,13 @@ from app.providers import (
     bangumi,
     bgg,
     comicvine,
+    douban,
     hardcover,
     igdb,
     mal,
     mangaupdates,
     manual,
+    neodb,
     openlibrary,
     tmdb,
 )
@@ -38,6 +40,8 @@ def get_redis_client():
 redis_db = get_redis_client()
 bucket_key = f"{settings.REDIS_PREFIX}_api" if settings.REDIS_PREFIX else "api"
 bangumi_bucket_key = f"{bucket_key}_bangumi"
+neodb_bucket_key = f"{bucket_key}_neodb"
+douban_bucket_key = f"{bucket_key}_douban"
 
 session = LimiterSession(
     per_second=5,
@@ -58,6 +62,18 @@ bangumi_adapter = LimiterAdapter(
     bucket_kwargs={"redis": redis_db, "bucket_key": bangumi_bucket_key},
 )
 session.mount("https://api.bgm.tv/v0/", bangumi_adapter)
+neodb_adapter = LimiterAdapter(
+    per_second=1,
+    bucket_class=RedisBucket,
+    bucket_kwargs={"redis": redis_db, "bucket_key": neodb_bucket_key},
+)
+session.mount("https://neodb.social/", neodb_adapter)
+douban_adapter = LimiterAdapter(
+    per_second=1,
+    bucket_class=RedisBucket,
+    bucket_kwargs={"redis": redis_db, "bucket_key": douban_bucket_key},
+)
+session.mount("https://book.douban.com/", douban_adapter)
 session.mount(
     "https://graphql.anilist.co",
     LimiterAdapter(per_minute=85),
@@ -190,6 +206,8 @@ def api_request(
 
         if response_format == "xml":
             return ElementTree.fromstring(response.text)
+        if response_format == "text":
+            return response.text
         return response.json()
 
     except requests.exceptions.HTTPError as error:
@@ -238,6 +256,13 @@ def get_media_metadata(
     if source == Sources.BANGUMI.value:
         return bangumi.subject(media_id, media_type)
 
+    book_retrievers = {
+        Sources.NEODB.value: neodb.book,
+        Sources.DOUBAN.value: douban.book,
+    }
+    if source in book_retrievers:
+        return book_retrievers[source](media_id)
+
     metadata_retrievers = {
         MediaTypes.ANIME.value: lambda: mal.anime(media_id),
         MediaTypes.MANGA.value: lambda: (
@@ -272,6 +297,12 @@ def search(media_type, query, page, source=None):
     """Search for media based on the query and return the results."""
     if source == Sources.BANGUMI.value:
         return bangumi.search(media_type, query, page)
+
+    if source == Sources.NEODB.value:
+        return neodb.search(media_type, query, page)
+
+    if source == Sources.DOUBAN.value:
+        return douban.search(media_type, query, page)
 
     search_handlers = {
         MediaTypes.MANGA.value: lambda: (
